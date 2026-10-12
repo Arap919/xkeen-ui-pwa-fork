@@ -28,7 +28,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
@@ -50,6 +50,15 @@ struct Cli {
         help = "Запуск сервиса с указанием порта"
     )]
     port: String,
+
+    #[arg(long, value_name = "PATH", help = "TLS certificate in PEM format")]
+    tls_cert: Option<PathBuf>,
+
+    #[arg(long, value_name = "PATH", help = "TLS private key in PEM format")]
+    tls_key: Option<PathBuf>,
+
+    #[arg(long, conflicts_with_all = ["tls_cert", "tls_key"], help = "Disable automatic TLS detection")]
+    no_tls: bool,
 
     #[arg(short = 'd', long = "debug", help = "Режим отладки")]
     debug: bool,
@@ -80,7 +89,7 @@ const XKEEN_UI_INIT_CONTENT: &str = r#"#!/bin/sh
 
 ENABLED=yes
 PROCS=xkeen-ui
-ARGS="-p 1000"
+ARGS="__XKEEN_UI_ARGS__"
 PREARGS=""
 DESC="$PROCS"
 PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -94,9 +103,26 @@ fn create_init() -> std::io::Result<()> {
     if let Some(dir) = Path::new(S99XKEEN_UI).parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(S99XKEEN_UI, XKEEN_UI_INIT_CONTENT)?;
+    let cert_exists = Path::new(DEFAULT_TLS_CERT).is_file();
+    let key_exists = Path::new(DEFAULT_TLS_KEY).is_file();
+    if cert_exists != key_exists {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("both TLS files must exist: {DEFAULT_TLS_CERT} and {DEFAULT_TLS_KEY}"),
+        ));
+    }
+    let args = if cert_exists {
+        format!("-p 1000 --tls-cert {DEFAULT_TLS_CERT} --tls-key {DEFAULT_TLS_KEY}")
+    } else {
+        "-p 1000".to_string()
+    };
+    let content = XKEEN_UI_INIT_CONTENT.replace("__XKEEN_UI_ARGS__", &args);
+    std::fs::write(S99XKEEN_UI, content)?;
     std::fs::set_permissions(S99XKEEN_UI, std::fs::Permissions::from_mode(0o755))
 }
+
+const DEFAULT_TLS_CERT: &str = "/opt/etc/nginx/ssl/server.crt";
+const DEFAULT_TLS_KEY: &str = "/opt/etc/nginx/ssl/server.key";
 
 fn exec_init(cmd: &str) -> ! {
     use std::os::unix::process::CommandExt;
@@ -291,6 +317,23 @@ async fn main() {
     }
     let matches = command.get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+
+    let tls_files = match (cli.tls_cert.as_deref(), cli.tls_key.as_deref()) {
+        (Some(cert), Some(key)) => Some((cert, key)),
+        (None, None) if cli.no_tls => None,
+        (None, None) => {
+            let cert = Path::new(DEFAULT_TLS_CERT);
+            let key = Path::new(DEFAULT_TLS_KEY);
+            match (cert.is_file(), key.is_file()) {
+                (true, true) => Some((cert, key)),
+                (false, false) => None,
+                _ => report_process_error(&format!(
+                    "Both default TLS files must exist: {DEFAULT_TLS_CERT} and {DEFAULT_TLS_KEY}"
+                )),
+            }
+        }
+        _ => report_process_error("--tls-cert and --tls-key must be provided together"),
+    };
 
     if let Some(command) = cli.command {
         match command {
@@ -535,13 +578,24 @@ async fn main() {
     let addr: SocketAddr = format!("0.0.0.0:{}", cli.port)
         .parse()
         .unwrap_or_else(|e| report_process_error(&format!("Error listening on 0.0.0.0:{}: {}", cli.port, e)));
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| report_process_error(&format!("Error listening on {}: {}", addr, e)));
-    println!("{} [INFO] Listening on {}", ts(), addr);
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .unwrap_or_else(|e| report_process_error(&format!("HTTP server error: {}", e)));
+    if let Some((cert, key)) = tls_files {
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+            .await
+            .unwrap_or_else(|e| report_process_error(&format!("Failed to load TLS certificate or key: {}", e)));
+        println!("{} [INFO] Listening on https://{}", ts(), addr);
+        axum_server::bind_rustls(addr, tls_config)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await
+            .unwrap_or_else(|e| report_process_error(&format!("HTTPS server error: {}", e)));
+    } else {
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .unwrap_or_else(|e| report_process_error(&format!("Error listening on {}: {}", addr, e)));
+        println!("{} [INFO] Listening on http://{}", ts(), addr);
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+            .await
+            .unwrap_or_else(|e| report_process_error(&format!("HTTP server error: {}", e)));
+    }
 }
 
 fn get_arch() -> String {

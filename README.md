@@ -61,17 +61,3 @@ curl -fsSL https://raw.githubusercontent.com/Arap919/xkeen-ui-pwa-fork/main/setu
 > Открытие доступа к панели из интернета без должных мер безопасности может привести к взлому роутера или утечке данных.
 > За данные последствия автор проекта ответственность не несет.
 <br>
-  
-## 🪙 Понравился проект? Поддержи разработку
-
-- [**Cloudtips**](https://pay.cloudtips.ru/p/24b4c4b6)
-
-- Банковская карта: `2204 3203 4161 6409`
-  
-&nbsp;
-
-## 🙏 Благодарности
-
-- [**Skrill0/XKeen**](https://github.com/Skrill0/XKeen)  
-- [**jameszeroX/XKeen**](https://github.com/jameszeroX/XKeen)  
-- [**Anonym-tsk/nfqws-keenetic**](https://github.com/Anonym-tsk/nfqws-keenetic)
