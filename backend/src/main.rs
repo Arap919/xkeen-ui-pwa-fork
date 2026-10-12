@@ -299,7 +299,7 @@ async fn main() {
                 let err = std::process::Command::new("sh")
                     .args([
                         "-c",
-                        "curl -L https://raw.githubusercontent.com/zxc-rv/XKeen-UI/main/setup.sh | sh",
+                        "curl -L https://raw.githubusercontent.com/Arap919/xkeen-ui-pwa-fork/main/setup.sh | sh",
                     ])
                     .exec();
                 eprintln!(" {} {}", " Ошибка запуска setup:".red().bold(), err);

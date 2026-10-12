@@ -15,6 +15,9 @@
 
 </div>
 <br>  
+
+> [!NOTE]
+> Это форк [оригинального XKeen UI](https://github.com/zxc-rv/XKeen-UI), развиваемый с сохранением исходной лицензии и атрибуции. Отличия форка: поддержка установки интерфейса как PWA и руководство по локальному HTTPS в [`frontend/README.md`](frontend/README.md). Сборки и обновления форка публикуются в [Arap919/xkeen-ui-pwa-fork](https://github.com/Arap919/xkeen-ui-pwa-fork).
   
 ## ✨ Особенности
 
@@ -45,16 +48,10 @@
 ### Cтабильная/Latest версия
 
 ```SH
-curl https://raw.githubusercontent.com/zxc-rv/XKeen-UI/main/setup.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Arap919/xkeen-ui-pwa-fork/main/setup.sh | sh
 ```
 
-### Бета/Pre-release версия
-
-```SH
-curl https://raw.githubusercontent.com/zxc-rv/XKeen-UI/main/setup.sh | sh -s -- beta
-```
-
-<br>
+Релизы форка публикуются автоматически по тегам `vX.Y.Z+pwa.N`; установщик всегда использует последний стабильный релиз форка.
 
 ## 🌐 Доступ извне
 

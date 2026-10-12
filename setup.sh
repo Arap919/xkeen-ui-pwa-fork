@@ -21,9 +21,11 @@ LIGHTTPD_INIT="/opt/etc/init.d/S80lighttpd"
 LIGHTTPD_DIR="/opt/etc/lighttpd"
 LIGHTTPD_CONF="$LIGHTTPD_DIR/conf.d/90-xkeenui.conf"
 
-BETA=false
 LOCAL=false
-[ "$1" = "beta" ] && BETA=true
+[ "$1" = "beta" ] && {
+  printf "${ERROR} Бета-релизы не публикуются. Установщик использует стабильные версии.${NCN}" >&2
+  exit 2
+}
 
 spinner() {
   local pid=$1 msg=$2
@@ -50,23 +52,9 @@ get_arch() {
 }
 
 download_files() {
-  local base_url="https://github.com/zxc-rv/XKeen-UI/releases"
+  local base_url="https://github.com/Arap919/xkeen-ui-pwa-fork/releases"
   local download_url="$base_url/latest/download"
   local bin_name="xkeen-ui-$ARCH"
-
-  if [ "$BETA" = true ]; then
-    local beta_tag="/tmp/xkeen_beta"
-    trap "rm -f $beta_tag" EXIT
-    (curl -s https://api.github.com/repos/zxc-rv/XKeen-UI/releases | \
-  jq -re '.[0] | select(.prerelease == true) | .tag_name' > $beta_tag) &
-    if ! spinner $! "Поиск бета-релиза..."; then
-      printf "${RED_BOLD}\n Нет актуального бета-релиза${NCN}"
-      $XKEENUI_INIT start &>/dev/null || :
-      exit 1
-    fi
-    beta_tag=$(cat $beta_tag)
-    download_url="$base_url/download/$beta_tag"
-  fi
 
   if [ "$LOCAL" = true ] && [ -f "/opt/tmp/$bin_name" ]; then
     ( set -e; mv "/opt/tmp/$bin_name" $XKEENUI_BIN && chmod +x $XKEENUI_BIN ) &
@@ -238,7 +226,7 @@ printf "${NC}\n$(get_status)\n"
 printf "Архитектура: ${GREEN_BOLD}$ARCH\n"
 printf "\nДобро пожаловать! Выберите действие:${NCN}"
 printf "  1. Установить/переустановить\n"
-printf "  2. Обновить\n"
+printf "  2. Обновить (стабильная версия)\n"
 printf "  3. Удалить\n"
 printf "\n  0. Выйти\n\n"
 

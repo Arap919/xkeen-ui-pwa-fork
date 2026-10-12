@@ -18,6 +18,7 @@ use tokio::process::Command;
 
 const GITHUB_API: &str = "https://api.github.com/repos";
 const GITHUB_RELEASE: &str = "https://github.com";
+const XKEEN_UI_REPO: &str = "Arap919/xkeen-ui-pwa-fork";
 
 #[derive(Deserialize)]
 struct GhAsset {
@@ -65,7 +66,7 @@ pub fn get_repo(updater: &UpdaterSettings, core: &str) -> Option<String> {
     let (url, fallback) = match core {
         "xray" => (&updater.xray_repo, "XTLS/Xray-core"),
         "mihomo" => (&updater.mihomo_repo, "MetaCubeX/mihomo"),
-        "self" => return Some("zxc-rv/XKeen-UI".into()),
+        "self" => return Some(XKEEN_UI_REPO.into()),
         _ => return None,
     };
     Some(if valid_repo_url(url) {
@@ -101,7 +102,7 @@ pub fn pick_asset(assets: &[String], arch: &str, ver: &str) -> Option<String> {
 }
 
 async fn fetch_release_assets(client: &reqwest::Client, proxies: &[String], repo: &str, tag: &str) -> Vec<String> {
-    let url = format!("{}/{}/releases/tags/{}", GITHUB_API, repo, tag);
+    let url = format!("{}/{}/releases/tags/{}", GITHUB_API, repo, urlencoding::encode(tag));
     let list = std::iter::once(url.clone()).chain(
         proxies
             .iter()
@@ -421,7 +422,10 @@ pub async fn post_update(State(state): State<AppState>, Json(req): Json<UpdateRe
         };
 
         log("INFO", "Загрузка исполняемого файла...".into());
-        let bin_url = format!("{GITHUB_RELEASE}/{repo}/releases/download/{ver}/xkeen-ui-{arch_suffix}");
+        let bin_url = format!(
+            "{GITHUB_RELEASE}/{repo}/releases/download/{}/xkeen-ui-{arch_suffix}",
+            urlencoding::encode(&ver)
+        );
         let bin_d = match download(&state.http_client, &bin_url, &proxies, &tmp_dir.join("bin.tmp")).await {
             Ok(d) => d,
             Err(e) => return response(false, Some(e)),
@@ -528,7 +532,13 @@ pub async fn post_update(State(state): State<AppState>, Json(req): Json<UpdateRe
             _ => return response(false, Some("Неизвестное ядро".into())),
         }
     };
-    let url = format!("{}/{}/releases/download/{}/{}", GITHUB_RELEASE, repo, ver, asset);
+    let url = format!(
+        "{}/{}/releases/download/{}/{}",
+        GITHUB_RELEASE,
+        repo,
+        urlencoding::encode(&ver),
+        urlencoding::encode(&asset)
+    );
 
     match req.core.as_str() {
         "xray" if !Path::new("/opt/bin/jq").exists() => {
@@ -694,7 +704,7 @@ mod tests {
         let mut s = UpdaterSettings::default();
         assert_eq!(get_repo(&s, "xray").as_deref(), Some("XTLS/Xray-core"));
         assert_eq!(get_repo(&s, "mihomo").as_deref(), Some("MetaCubeX/mihomo"));
-        assert_eq!(get_repo(&s, "self").as_deref(), Some("zxc-rv/XKeen-UI"));
+        assert_eq!(get_repo(&s, "self").as_deref(), Some(XKEEN_UI_REPO));
 
         s.xray_repo = "https://github.com/someone/xray-fork".into();
         assert_eq!(get_repo(&s, "xray").as_deref(), Some("someone/xray-fork"));

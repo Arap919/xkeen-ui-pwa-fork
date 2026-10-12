@@ -61,7 +61,7 @@ pub async fn version_handler(State(state): State<AppState>) -> impl IntoResponse
     let updater_settings = state.settings.read().unwrap().updater.clone();
 
     let make_link = |repo: &str, tag: Option<&str>| -> Option<String> {
-        tag.map(|t| format!("{}/{}/releases/tag/{}", GITHUB_RELEASE, repo, t))
+        tag.map(|t| format!("{}/{}/releases/tag/{}", GITHUB_RELEASE, repo, urlencoding::encode(t)))
     };
 
     {
@@ -165,7 +165,53 @@ pub fn start_update_checker(state: AppState) {
 
 fn compare_versions(latest: &str, current: &str) -> bool {
     match (semver::Version::parse(latest), semver::Version::parse(current)) {
-        (Ok(latest_version), Ok(current_version)) => latest_version > current_version,
+        (Ok(latest_version), Ok(current_version)) => {
+            let precedence = latest_version.cmp_precedence(&current_version);
+            if precedence != std::cmp::Ordering::Equal {
+                return precedence == std::cmp::Ordering::Greater;
+            }
+
+            let latest_fork_revision = fork_revision(&latest_version);
+            let current_fork_revision = fork_revision(&current_version);
+            match (latest_fork_revision, current_fork_revision) {
+                (Some(latest), Some(current)) => latest > current,
+                (Some(_), None) => true,
+                _ => false,
+            }
+        }
         _ => latest != current,
+    }
+}
+
+fn fork_revision(version: &semver::Version) -> Option<u64> {
+    let mut identifiers = version.build.as_str().split('.');
+    if identifiers.next()? != "pwa" {
+        return None;
+    }
+    let revision = identifiers.next()?.parse().ok()?;
+    identifiers.next().is_none().then_some(revision)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compare_versions;
+
+    #[test]
+    fn compares_fork_revisions_after_upstream_version() {
+        assert!(compare_versions("1.2.3+pwa.2", "1.2.3+pwa.1"));
+        assert!(!compare_versions("1.2.3+pwa.1", "1.2.3+pwa.2"));
+        assert!(!compare_versions("1.2.3+pwa.1", "1.2.3+pwa.1"));
+    }
+
+    #[test]
+    fn fork_revision_does_not_override_upstream_version() {
+        assert!(compare_versions("1.2.4+pwa.1", "1.2.3+pwa.99"));
+        assert!(!compare_versions("1.2.3+pwa.99", "1.2.4+pwa.1"));
+    }
+
+    #[test]
+    fn fork_release_is_newer_than_same_upstream_version_without_metadata() {
+        assert!(compare_versions("1.2.3+pwa.1", "1.2.3"));
+        assert!(!compare_versions("1.2.3", "1.2.3+pwa.1"));
     }
 }
