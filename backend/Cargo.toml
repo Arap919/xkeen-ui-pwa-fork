@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 argon2 = { version = "0.6" }
 axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 colored = "3"

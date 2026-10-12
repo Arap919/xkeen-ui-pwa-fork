@@ -17,6 +17,8 @@ INFO="\n${CYAN} ℹ️ "
 XKEENUI_BIN="/opt/sbin/xkeen-ui"
 XKEENUI_INIT="/opt/etc/init.d/S99xkeen-ui"
 STATIC_DIR="/opt/share/www/XKeen-UI"
+TLS_CERT="/opt/etc/nginx/ssl/server.crt"
+TLS_KEY="/opt/etc/nginx/ssl/server.key"
 LIGHTTPD_INIT="/opt/etc/init.d/S80lighttpd"
 LIGHTTPD_DIR="/opt/etc/lighttpd"
 LIGHTTPD_CONF="$LIGHTTPD_DIR/conf.d/90-xkeenui.conf"
@@ -164,9 +166,11 @@ uninstall_xkeenui() {
 finish_setup() {
   local ip=$(ip -4 a s br0 2>/dev/null | sed -n 's/.*inet \([0-9.]*\).*/\1/p'); ip=${ip:-"IP_Роутера"}
   local port=$(sed -n 's/.*-p \([0-9]*\).*/\1/p' $XKEENUI_INIT 2>/dev/null); port=${port:-1000}
+  local scheme="http"
+  grep -q -- '--tls-cert' "$XKEENUI_INIT" 2>/dev/null && scheme="https"
 
   printf "${SUCCESS} XKeen UI успешно $1!${NCN}"
-  printf " Панель доступна по адресу: ${GREEN_BOLD}http://$ip:$port${NC}\n\n"
+  printf " Панель доступна по адресу: ${GREEN_BOLD}$scheme://$ip:$port${NC}\n\n"
 }
 
 legacy_installation_check() {
@@ -184,12 +188,20 @@ legacy_installation_check() {
 }
 
 create_xkeenui_init() {
+  local args="-p 1000"
+  if [ -f "$TLS_CERT" ] && [ -f "$TLS_KEY" ]; then
+    args="$args --tls-cert $TLS_CERT --tls-key $TLS_KEY"
+  elif [ -e "$TLS_CERT" ] || [ -e "$TLS_KEY" ]; then
+    printf "${ERROR} Найден только один TLS-файл сертификата/ключа; запускаю HTTP. Проверьте $TLS_CERT и $TLS_KEY.${NCN}"
+  else
+    printf "${INFO} TLS-сертификаты не найдены; панель будет работать по HTTP. Для HTTPS положите сертификат и ключ в $TLS_CERT и $TLS_KEY и переустановите/перезапустите init-скрипт.${NCN}"
+  fi
   cat << EOF > $XKEENUI_INIT
 #!/bin/sh
 
 ENABLED=yes
 PROCS=xkeen-ui
-ARGS="-p 1000"
+ARGS="$args"
 PREARGS=""
 DESC="\$PROCS"
 PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
