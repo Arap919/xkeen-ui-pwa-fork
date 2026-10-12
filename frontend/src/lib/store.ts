@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
-import { clashFetch } from './api'
+import { apiCall, clashFetch } from './api'
 import { getStoredTheme } from './theme'
 import {
   DEFAULT_MIHOMO_REPO,
@@ -35,6 +35,7 @@ const initialSettings: AppSettings = {
   pingTestUrl: DEFAULT_PING_TEST_URL,
   pingTestTimeout: DEFAULT_PING_TEST_TIMEOUT,
   showSourceName: false,
+  closeConnectionsOnApply: false,
   hideUnavailableProxies: false,
   hideUnavailableProxiesCounter: 3,
   proxySortOrder: 'default',
@@ -150,7 +151,7 @@ const useStore = create<StoreState>((set) => ({
 
 type ShowToastFn = (
   message: string | { title: string; body: string; persistent?: boolean; id?: string; action?: { url: string } },
-  type?: 'success' | 'error'
+  type?: 'success' | 'error' | 'warning'
 ) => void
 
 type CoreState = Omit<
@@ -223,14 +224,15 @@ const selectCoreStateWithConfigsAndSettings = (s: StoreState): CoreStateWithConf
 
 export function showToast(
   message: string | { title: string; body: string; persistent?: boolean; id?: string; action?: { url: string } },
-  type: 'success' | 'error' = 'success'
+  type: 'success' | 'error' | 'warning' = 'success'
 ) {
   const dispatch = useStore.getState().dispatch
   const id = typeof message === 'string' ? Math.random().toString(36).slice(2) : (message.id ?? Math.random().toString(36).slice(2))
   if (typeof message !== 'string' && message.id) dispatch({ type: 'REMOVE_TOAST', id: message.id })
+  const defaultTitle = type === 'error' ? 'Ошибка' : type === 'warning' ? 'Предупреждение' : 'Успех'
   const toast: ToastMessage =
     typeof message === 'string'
-      ? { id, title: type === 'error' ? 'Ошибка' : 'Успех', body: message, type }
+      ? { id, title: defaultTitle, body: message, type }
       : {
           id,
           title: message.title,
@@ -477,12 +479,19 @@ async function preloadIcons(urls: string[]) {
 export async function fetchClashProxies(port: string, secret?: string | null, silent = false, unix?: string | null): Promise<void> {
   if (!silent) useProxiesStore.setState({ loading: true, error: false })
   try {
-    const [proxiesData, providersData] = await Promise.all([
-      clashFetch<{ proxies?: Record<string, unknown> }>(port, 'proxies', { secret, unix }),
-      clashFetch<{ providers?: Record<string, ProxyProvider> }>(port, 'providers/proxies', { secret, unix }).catch(() => ({
-        providers: undefined,
-      })),
-    ])
+    const fetchPair = () =>
+      Promise.all([
+        clashFetch<{ proxies?: Record<string, unknown> }>(port, 'proxies', { secret, unix }),
+        clashFetch<{ providers?: Record<string, ProxyProvider> }>(port, 'providers/proxies', { secret, unix }).catch(() => ({
+          providers: undefined,
+        })),
+      ])
+    let [proxiesData, providersData] = await fetchPair()
+    for (const delay of [500, 1000]) {
+      if (proxiesData.proxies && Object.keys(proxiesData.proxies).length > 0) break
+      await new Promise((r) => setTimeout(r, delay))
+      ;[proxiesData, providersData] = await fetchPair()
+    }
 
     if (proxiesData.proxies) {
       const proxies = { ...proxiesData.proxies }
@@ -549,7 +558,8 @@ export function syncClashApiPort(delayMs = 0): void {
 export interface DnsStatus {
   dnsOverride: boolean
   dnsMihomo: boolean
-  providerIgnored: boolean
+  hasProviderNameservers: boolean
+  portListener?: string
 }
 
 interface DnsStatusStore {
@@ -570,6 +580,33 @@ export function setDnsStatus(status: DnsStatus | null): void {
 
 export function setDnsStatusLoading(loading: boolean): void {
   useDnsStatusStore.setState({ loading })
+}
+
+export async function fetchDnsStatus(): Promise<void> {
+  setDnsStatusLoading(true)
+  try {
+    const data = await apiCall<{ success: boolean; status?: DnsStatus }>('GET', 'dns')
+    if (data.success && data.status) {
+      setDnsStatus(data.status)
+      const s = data.status
+      const listener = (s.portListener ?? '').toLowerCase()
+      if (s.dnsOverride && s.dnsMihomo && !listener.includes('mihomo')) {
+        showToast(
+          {
+            title: 'Предупреждение',
+            body: 'Mihomo не является слушателем 53 порта, проверьте настройки DNS и перезапустите XKeen',
+            id: 'dns-port-listener-warning',
+            persistent: true,
+          },
+          'warning'
+        )
+      } else {
+        useStore.getState().dispatch({ type: 'REMOVE_TOAST', id: 'dns-port-listener-warning' })
+      }
+    }
+  } finally {
+    setDnsStatusLoading(false)
+  }
 }
 
 export function bumpDnsRefresh(): void {
