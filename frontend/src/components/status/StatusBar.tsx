@@ -24,18 +24,10 @@ import {
   IconSettings,
   IconAlertCircle,
 } from '@tabler/icons-react'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiCall, capitalize, clashFetch } from '../../lib/api'
 import { ensureDnsEnabled, setDnsEnabled, DEFAULT_DNS_CONFIG } from '../configuration/mihomo/DnsPanel'
-import {
-  syncClashApiPort,
-  getAppState,
-  useAppContext,
-  bumpDnsRefresh,
-  setDnsStatus,
-  setDnsStatusLoading,
-  useDnsStatusStore,
-} from '../../lib/store'
+import { syncClashApiPort, getAppState, useAppContext, bumpDnsRefresh, fetchDnsStatus, useDnsStatusStore } from '../../lib/store'
 import { cn } from '../../lib/utils'
 
 type SystemStats = { memoryUsed: number; memoryTotal: number; cpuUsage: number }
@@ -90,26 +82,18 @@ export function StatusBar({
   const [dnsWarningOpen, setDnsWarningOpen] = useState(false)
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null)
 
-  const fetchDnsStatus = useCallback(async () => {
-    try {
-      setDnsStatusLoading(true)
-      const data = await apiCall<{ success: boolean; status?: { dnsOverride: boolean; dnsMihomo: boolean; providerIgnored: boolean } }>(
-        'GET',
-        'dns'
-      )
-      if (data.success && data.status) {
-        setDnsStatus(data.status)
-        return data.status.dnsOverride && data.status.dnsMihomo
-      }
-    } catch {
-      // ignore
-    }
-    return false
-  }, [])
-
   useEffect(() => {
-    if (currentCore === 'mihomo') fetchDnsStatus()
-  }, [fetchDnsStatus, currentCore])
+    if (currentCore === 'mihomo') fetchDnsStatus().catch(() => {})
+  }, [currentCore])
+
+  const prevServiceStatusRef = useRef(serviceStatus)
+  useEffect(() => {
+    const prev = prevServiceStatusRef.current
+    prevServiceStatusRef.current = serviceStatus
+    if (prev === 'pending' && serviceStatus === 'running' && currentCore === 'mihomo') {
+      fetchDnsStatus().catch(() => {})
+    }
+  }, [serviceStatus, currentCore])
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -146,7 +130,10 @@ export function StatusBar({
 
   async function startService() {
     setPending('Запуск...')
-    const result = await apiCall<any>('POST', 'control', { action: 'start' })
+    const result = await apiCall<any>('POST', 'control', { action: 'start' }).catch((e) => ({
+      success: false,
+      error: e instanceof Error ? e.message : String(e),
+    }))
     showToast(result.success ? 'XKeen запущен' : `${result.output || result.error}`, result.success ? 'success' : 'error')
     if (!result.success) {
       dispatch({ type: 'SET_SERVICE_STATUS', status: 'stopped' })
@@ -155,12 +142,23 @@ export function StatusBar({
     }
     syncClashApiPort()
     if (settings.autoDns !== 'disabled' && state.currentCore === 'mihomo') {
-      await applyAutoDns(settings.autoDns === 'with_filter')
-      const { clashApiPort, clashApiSecret, clashApiUnix } = getAppState()
-      await clashFetch(clashApiPort ?? '', 'configs', { method: 'PUT', secret: clashApiSecret, unix: clashApiUnix, body: {} })
-      bumpDnsRefresh()
+      try {
+        await applyAutoDns(settings.autoDns === 'with_filter')
+        const { clashApiPort, clashApiSecret, clashApiUnix } = getAppState()
+        await clashFetch(clashApiPort ?? '', 'configs', {
+          method: 'PUT',
+          secret: clashApiSecret,
+          unix: clashApiUnix,
+          body: {},
+        })
+        bumpDnsRefresh()
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        showToast(`XKeen запущен, но авто-включение DNS не удалось: ${msg}`, 'error')
+      }
     }
     dispatch({ type: 'SET_SERVICE_STATUS', status: 'running' })
+    syncClashApiPort(200)
     onRefreshStatus()
   }
 
@@ -179,6 +177,15 @@ export function StatusBar({
 
   async function disableDnsAndStop() {
     setPending('Остановка...')
+    const stopResult = await apiCall<any>('POST', 'control', { action: 'stop' })
+    showToast(
+      stopResult.success ? 'XKeen остановлен' : `${stopResult.output || stopResult.error}`,
+      stopResult.success ? 'success' : 'error'
+    )
+    if (!stopResult.success) {
+      onRefreshStatus()
+      return
+    }
     try {
       await persistDnsEnabled(false)
       const result = await apiCall<{ success: boolean; error?: string }>('DELETE', 'dns', {})
@@ -190,11 +197,6 @@ export function StatusBar({
     } catch {
       showToast('Ошибка отключения DNS', 'error')
     }
-    const stopResult = await apiCall<any>('POST', 'control', { action: 'stop' })
-    showToast(
-      stopResult.success ? 'XKeen остановлен' : `${stopResult.output || stopResult.error}`,
-      stopResult.success ? 'success' : 'error'
-    )
     onRefreshStatus()
   }
 
@@ -204,7 +206,7 @@ export function StatusBar({
     showToast(result.success ? 'XKeen перезапущен' : `${result.output || result.error}`, result.success ? 'success' : 'error')
     dispatch({ type: 'SET_SERVICE_STATUS', status: result.success ? 'running' : 'stopped' })
     if (result.success) {
-      syncClashApiPort()
+      syncClashApiPort(200)
     }
     onRefreshStatus()
   }
@@ -428,7 +430,7 @@ export function StatusBar({
             <AlertDialogTitle className="flex items-center gap-2">
               <IconAlertCircle size={18} className="text-amber-400" /> Внимание
             </AlertDialogTitle>
-            <AlertDialogDescription>Перед остановкой XKeen будет отключено управление DNS. Продолжить?</AlertDialogDescription>
+            <AlertDialogDescription>После остановки XKeen будет отключено управление DNS. Продолжить?</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setDnsWarningOpen(false)}>Отмена</AlertDialogCancel>

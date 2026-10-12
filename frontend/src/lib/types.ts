@@ -30,6 +30,7 @@ export interface AppSettings {
   pingTestUrl: string
   pingTestTimeout: number
   showSourceName: boolean
+  closeConnectionsOnApply: boolean
   hideUnavailableProxies: boolean
   hideUnavailableProxiesCounter: number
   proxySortOrder: ProxySortOrder
@@ -84,7 +85,7 @@ export interface ToastMessage {
   id: string
   title: string
   body: string
-  type: 'success' | 'error'
+  type: 'success' | 'error' | 'warning'
   persistent?: boolean
   action?: ToastAction
 }
