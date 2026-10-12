@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: upstream-sync
@@ -72,12 +71,17 @@ jobs:
       - name: Create or update upstream pull request
         if: steps.sync.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_PR_TOKEN: ${{ secrets.UPSTREAM_PR_TOKEN }}
           UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
           BASE_SHA: ${{ steps.sync.outputs.base_sha }}
         run: |
           set -euo pipefail
-          pr_number="$(gh pr list \
+          if [ -z "$UPSTREAM_PR_TOKEN" ]; then
+            echo "::error::Add a fine-grained repository secret named UPSTREAM_PR_TOKEN with Pull requests read/write access."
+            exit 1
+          fi
+
+          pr_number="$(GH_TOKEN="$UPSTREAM_PR_TOKEN" gh pr list \
             --base main \
             --head upstream-sync/main \
             --state open \
@@ -86,11 +90,11 @@ jobs:
           body="$(printf 'Imports upstream changes through `%s`.\n\nReview the upstream diff: https://github.com/zxc-rv/XKeen-UI/compare/%s...%s' "$UPSTREAM_SHA" "$BASE_SHA" "$UPSTREAM_SHA")"
 
           if [ -n "$pr_number" ]; then
-            gh pr edit "$pr_number" \
+            GH_TOKEN="$UPSTREAM_PR_TOKEN" gh pr edit "$pr_number" \
               --title "Sync upstream main" \
               --body "$body"
           else
-            gh pr create \
+            GH_TOKEN="$UPSTREAM_PR_TOKEN" gh pr create \
               --base main \
               --head upstream-sync/main \
               --title "Sync upstream main" \
