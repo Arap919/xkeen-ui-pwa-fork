@@ -81,22 +81,23 @@ jobs:
             exit 1
           fi
 
-          pr_number="$(GH_TOKEN="$UPSTREAM_PR_TOKEN" gh pr list \
-            --base main \
-            --head upstream-sync/main \
-            --state open \
-            --json number \
+          pr_number="$(GH_TOKEN="$UPSTREAM_PR_TOKEN" gh api \
+            'repos/Arap919/xkeen-ui-pwa-fork/pulls?state=open&head=Arap919:upstream-sync/main&base=main&per_page=1' \
             --jq '.[0].number // empty')"
           body="$(printf 'Imports upstream changes through `%s`.\n\nReview the upstream diff: https://github.com/zxc-rv/XKeen-UI/compare/%s...%s' "$UPSTREAM_SHA" "$BASE_SHA" "$UPSTREAM_SHA")"
 
           if [ -n "$pr_number" ]; then
-            GH_TOKEN="$UPSTREAM_PR_TOKEN" gh pr edit "$pr_number" \
-              --title "Sync upstream main" \
-              --body "$body"
+            GH_TOKEN="$UPSTREAM_PR_TOKEN" gh api \
+              "repos/Arap919/xkeen-ui-pwa-fork/pulls/$pr_number" \
+              --method PATCH \
+              -f title="Sync upstream main" \
+              -f body="$body"
           else
-            GH_TOKEN="$UPSTREAM_PR_TOKEN" gh pr create \
-              --base main \
-              --head upstream-sync/main \
-              --title "Sync upstream main" \
-              --body "$body"
+            GH_TOKEN="$UPSTREAM_PR_TOKEN" gh api \
+              repos/Arap919/xkeen-ui-pwa-fork/pulls \
+              --method POST \
+              -f title="Sync upstream main" \
+              -f head=upstream-sync/main \
+              -f base=main \
+              -f body="$body"
           fi
