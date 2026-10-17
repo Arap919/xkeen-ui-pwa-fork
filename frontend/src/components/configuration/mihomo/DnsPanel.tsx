@@ -23,17 +23,16 @@ import { IconAlertCircle, IconDeviceFloppy, IconInfoCircle } from '@tabler/icons
 import * as jsyaml from 'js-yaml'
 import { isNode, isSeq, parseDocument, YAMLMap, type Document } from 'yaml'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
-import { apiCall, capitalize, clashFetch } from '../../../lib/api'
+import { apiCall, clashFetch } from '../../../lib/api'
 import { useAppContext, useDnsStatusStore, fetchDnsStatus } from '../../../lib/store'
 import type { Config } from '../../../lib/types'
 
 const SETUP_FILTER_STORAGE_KEY = 'dnsSetupFilter'
 
-/// Имя слушателя 53 порта с заглавной буквы: mihomo -> Mihomo, ndnproxy -> Ndnproxy.
 function formatPortListener(listener: string): string {
   return listener
     .split(',')
-    .map((name) => capitalize(name.trim()))
+    .map((name) => name.trim())
     .join(', ')
 }
 
@@ -447,7 +446,8 @@ export const DnsPanel = memo(function DnsPanel() {
               <Alert className="border-amber-500/20 bg-amber-100 p-2.75 text-yellow-600 dark:bg-[#2a1f0d] dark:text-amber-400">
                 <IconAlertCircle className="size-4.5" />
                 <AlertDescription className="text-xs leading-4.25 tracking-wide text-yellow-600 dark:text-amber-400">
-                  Найдены активные DNS провайдера. Рекомендуется включить игнорирование, иначе могут возникнуть утечки.
+                  Найдены активные DNS провайдера. Перед включением управления DNS рекомендуется включить галочку «игнорировать DNS
+                  интернет-провайдера» в веб-конфигураторе Keenetic, в противном случае могут возникнуть утечки.
                 </AlertDescription>
               </Alert>
             )}
