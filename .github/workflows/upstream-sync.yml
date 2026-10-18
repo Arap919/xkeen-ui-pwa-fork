@@ -32,7 +32,7 @@ jobs:
           if git ls-remote --exit-code --heads origin upstream-sync/main >/dev/null 2>&1; then
             git fetch origin +refs/heads/upstream-sync/main:refs/remotes/origin/upstream-sync/main
           fi
-          git fetch upstream main
+          git fetch --no-tags upstream main "+refs/tags/v*:refs/upstream-tags/v*"
 
           git checkout -B upstream-sync/main origin/main
           if ! git merge --no-edit --no-ff upstream/main; then
