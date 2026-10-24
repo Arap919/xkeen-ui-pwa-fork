@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import './globals.css'
 import './lib/outboundParser.js'
+import { initVisibilityReload } from './lib/visibilityReload'
+
+initVisibilityReload()
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {

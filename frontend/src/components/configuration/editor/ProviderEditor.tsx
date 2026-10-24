@@ -1,9 +1,10 @@
 import { indentWithTab } from '@codemirror/commands'
 import { syntaxHighlighting } from '@codemirror/language'
-import { setDiagnostics } from '@codemirror/lint'
+import { setDiagnostics, type Diagnostic } from '@codemirror/lint'
 import { Compartment, EditorState, Prec } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { indentationMarkers } from '@replit/codemirror-indentation-markers'
+import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { editorHighlight, editorTheme, getLanguageExtension } from './highlighting'
@@ -13,7 +14,7 @@ import { baseSetupNoFold } from './setup'
 import { useEditorSearch } from './useEditorSearch'
 import { validateYaml } from './validation'
 
-export type ProviderEditorLanguage = 'yaml' | 'text'
+export type ProviderEditorLanguage = 'yaml' | 'text' | 'json'
 
 interface Props {
   content: string
@@ -21,21 +22,44 @@ interface Props {
   onChange: (value: string) => void
   onSave: () => void
   onValidationChange: (error?: string) => void
+  /** Перенос длинных строк в редакторе (по умолчанию включён). */
+  lineWrap?: boolean
 }
 
 function validateView(view: EditorView, language: ProviderEditorLanguage) {
-  const { diagnostics, error } = language === 'yaml' ? validateYaml(view.state.doc.toString()) : { diagnostics: [], error: undefined }
-  view.dispatch(setDiagnostics(view.state, diagnostics))
-  return error
+  const doc = view.state.doc
+  const result =
+    language === 'yaml'
+      ? validateYaml(doc.toString())
+      : language === 'json'
+        ? validateJson(doc.toString(), doc.length)
+        : { diagnostics: [], error: undefined }
+  view.dispatch(setDiagnostics(view.state, result.diagnostics))
+  return result.error
 }
 
-export function ProviderEditor({ content, language, onChange, onSave, onValidationChange }: Props) {
+/** Валидация JSON: ошибки парсера превращаются в подсветку прямо в редакторе. */
+function validateJson(text: string, docLength: number): { diagnostics: Diagnostic[]; error?: string } {
+  const errors: ParseError[] = []
+  parseJsonc(text, errors, { allowTrailingComma: true })
+  if (errors.length === 0) return { diagnostics: [] }
+  const diagnostics: Diagnostic[] = errors.map((e) => {
+    const from = Math.max(0, Math.min(e.offset, docLength))
+    const to = Math.min(from + Math.max(e.length, 1), docLength)
+    const line = text.slice(0, e.offset).split('\n').length
+    return { from, to, severity: 'error' as const, message: `Синтаксическая ошибка JSON (строка ${line})` }
+  })
+  return { diagnostics, error: 'Синтаксическая ошибка JSON' }
+}
+
+export function ProviderEditor({ content, language, onChange, onSave, onValidationChange, lineWrap = true }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const languageCompartmentRef = useRef(new Compartment())
   const latestRef = useRef({ language, onChange, onSave, onValidationChange })
   latestRef.current = { language, onChange, onSave, onValidationChange }
   const [initialContent] = useState(content)
+  const lineWrapCompartmentRef = useRef(new Compartment())
   const { searchPanel, bridge } = useEditorSearch(viewRef)
 
   useEffect(() => {
@@ -59,7 +83,7 @@ export function ProviderEditor({ content, language, onChange, onSave, onValidati
             ])
           ),
           keymap.of([indentWithTab]),
-          EditorView.lineWrapping,
+          lineWrapCompartmentRef.current.of(lineWrap ? EditorView.lineWrapping : []),
           createSearchExtension(bridge),
           lineNumbers({ formatNumber: (lineNumber) => String(lineNumber).padStart(3, '\u00a0') }),
           indentationMarkers(),
@@ -82,6 +106,12 @@ export function ProviderEditor({ content, language, onChange, onSave, onValidati
       view.destroy()
     }
   }, [initialContent, bridge])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({ effects: lineWrapCompartmentRef.current.reconfigure(lineWrap ? EditorView.lineWrapping : []) })
+  }, [lineWrap])
 
   useEffect(() => {
     const view = viewRef.current
