@@ -373,8 +373,11 @@ const parseHysteria2Xray = (uri) => {
     version: 2,
   }
   if (streamSettings.tlsSettings) streamSettings.tlsSettings.alpn = streamSettings.tlsSettings.alpn || ['h3']
+  const udpMasks = [...(streamSettings.finalmask?.udp || [])]
+  if (params.obfs === 'salamander') udpMasks.push({ type: 'salamander', settings: { password: params['obfs-password'] } })
   streamSettings.finalmask = {
     ...streamSettings.finalmask,
+    udp: udpMasks.length ? udpMasks : undefined,
     quicParams: { congestion: 'bbr', bbrProfile: 'standard', ...streamSettings.finalmask?.quicParams },
   }
 
