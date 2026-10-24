@@ -9,11 +9,12 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { IconAlertCircle, IconChevronDown, IconChevronUp, IconSettings, IconX, IconArrowBackUp } from '@tabler/icons-react'
 import { Fragment, memo, useCallback, useState } from 'react'
 import { apiCall } from '../../lib/api'
 import { useAppContext, useModalContext } from '../../lib/store'
-import type { AppSettings, AutoDnsMode, ProxySortOrder, ThemeMode } from '../../lib/types'
+import type { AppSettings, AutoDnsMode, PingMode, ProxySortOrder, ThemeMode } from '../../lib/types'
 
 type BooleanSettingKey = {
   [K in keyof AppSettings]: AppSettings[K] extends boolean ? K : never
@@ -35,14 +36,21 @@ const guiSettings: ToggleSetting[] = [
     key: 'guiRouting',
     path: 'gui.routing',
     title: 'Routing',
-    description: 'Визуализация правил роутинга для Xray',
+    description: 'Визуализация правил роутинга для Xray JSON',
+  },
+  {
+    id: 'gui-outbounds',
+    key: 'guiOutbounds',
+    path: 'gui.outbounds',
+    title: 'Outbounds',
+    description: 'Визуализация подключений для Xray JSON',
   },
   {
     id: 'gui-log',
     key: 'guiLog',
     path: 'gui.log',
     title: 'Log',
-    description: 'Визуализация настроек логирования для Xray',
+    description: 'Визуализация настроек логирования для Xray JSON',
   },
   {
     id: 'auto-apply',
@@ -92,6 +100,12 @@ const clashApiSettings: ToggleSetting[] = [
     title: 'Автозакрытие при применении',
     description: 'Закрывать все соединения после успешного применения конфига Mihomo',
   },
+]
+
+const pingModeOptions: { value: PingMode; label: string }[] = [
+  { value: 'single', label: 'Одинарный' },
+  { value: 'double', label: 'Двойной' },
+  { value: 'double_keep_alive', label: 'Двойной+KeepAlive' },
 ]
 
 const pluginSettings: ToggleSetting[] = [
@@ -282,49 +296,59 @@ const RepoSourceField = memo(function RepoSourceField({
   )
 
   return (
-    <Field className="px-0 py-3">
-      <FieldContent>
-        <FieldLabel htmlFor={`${repoKey}-input`}>{label}</FieldLabel>
-        <FieldDescription className="text-[13px] text-wrap!">{description}</FieldDescription>
-      </FieldContent>
-      <Field orientation="horizontal" className="gap-2">
-        <InputGroup className="flex-1">
-          <InputGroupInput
-            id={`${repoKey}-input`}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void save()}
-            onBlur={() => void save()}
-            placeholder={defaultUrl}
-            aria-invalid={invalid}
-            className="text-sm placeholder:text-sm"
-          />
-          {draft !== defaultUrl && (
-            <InputGroupAddon align="inline-end">
-              <InputGroupButton
-                aria-label="Вернуть значение по-умолчанию"
-                title="Вернуть значение по-умолчанию"
-                className="text-muted-foreground hover:text-foreground hover:bg-transparent!"
-                onMouseDown={(e) => e.preventDefault()} // Блочим лишний onBlur инпута
-                onClick={() => void save(defaultUrl)}
-              >
-                <IconArrowBackUp className="size-4.5" />
-              </InputGroupButton>
-            </InputGroupAddon>
-          )}
-        </InputGroup>
+    <TooltipProvider delayDuration={500}>
+      <Field className="px-0 py-3">
+        <FieldContent>
+          <FieldLabel htmlFor={`${repoKey}-input`}>{label}</FieldLabel>
+          <FieldDescription className="text-[13px] text-wrap!">{description}</FieldDescription>
+        </FieldContent>
+        <Field orientation="horizontal" className="gap-2">
+          <InputGroup className="flex-1">
+            <InputGroupInput
+              id={`${repoKey}-input`}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void save()}
+              onBlur={() => void save()}
+              placeholder={defaultUrl}
+              aria-invalid={invalid}
+              className="placeholder:text-sm"
+            />
+            {draft !== defaultUrl && (
+              <InputGroupAddon align="inline-end">
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <InputGroupButton
+                        aria-label="Вернуть значение по-умолчанию"
+                        className="text-muted-foreground hover:text-foreground hover:bg-transparent!"
+                        onMouseDown={(e) => e.preventDefault()} // Блочим лишний onBlur инпута
+                        onClick={() => void save(defaultUrl)}
+                      >
+                        <IconArrowBackUp className="size-4.5" />
+                      </InputGroupButton>
+                    }
+                  />
+                  <TooltipContent side="top" sideOffset={4}>
+                    Вернуть значение по-умолчанию
+                  </TooltipContent>
+                </Tooltip>
+              </InputGroupAddon>
+            )}
+          </InputGroup>
+        </Field>
+        {invalid && <FieldError>Некорректный URL</FieldError>}
       </Field>
-      {invalid && <FieldError>Некорректный URL</FieldError>}
-    </Field>
+    </TooltipProvider>
   )
 })
 
 const PING_URL_PRESETS = [
+  'cp.cloudflare.com/generate_204',
+  'www.gstatic.com/generate_204',
   'www.google.com/generate_204',
   'www.youtube.com/generate_204',
-  'www.gstatic.com/generate_204',
   'connectivitycheck.gstatic.com/generate_204',
-  'cp.cloudflare.com/generate_204',
 ] as const
 
 const PING_URL_CUSTOM = '__custom__'
@@ -341,11 +365,17 @@ const PingTestSettingsField = memo(function PingTestSettingsField({
   pingTimeout,
   onSave,
   showToast,
+  label = 'URL',
+  urlDescription = 'Адрес для ручного теста подключений Xray и Mihomo',
+  timeoutDescription = 'Порог времени теста, после которого подключение считается мертвым',
 }: {
   pingUrl: string
   pingTimeout: number
   onSave: (url: string, timeout: number) => Promise<boolean>
   showToast: (msg: string, type?: 'success' | 'error') => void
+  label?: string
+  urlDescription?: string
+  timeoutDescription?: string
 }) {
   const [initial] = useState(() => parsePingUrl(pingUrl))
   const [protocol, setProtocol] = useState(initial.protocol)
@@ -391,8 +421,8 @@ const PingTestSettingsField = memo(function PingTestSettingsField({
     <FieldGroup className="gap-0!">
       <Field className="px-0 py-3">
         <FieldContent>
-          <FieldLabel>URL пинга</FieldLabel>
-          <FieldDescription className="text-[13px]">Адрес для ручного пинг-теста через Clash API</FieldDescription>
+          <FieldLabel>{label}</FieldLabel>
+          <FieldDescription className="text-[13px]">{urlDescription}</FieldDescription>
         </FieldContent>
         <div className="flex items-center gap-2">
           <Select
@@ -403,17 +433,13 @@ const PingTestSettingsField = memo(function PingTestSettingsField({
               void saveHost(host, value)
             }}
           >
-            <SelectTrigger className="w-24 text-sm" aria-label="Протокол">
+            <SelectTrigger className="w-24" aria-label="Протокол">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                <SelectItem value="http" className="text-sm">
-                  http
-                </SelectItem>
-                <SelectItem value="https" className="text-sm">
-                  https
-                </SelectItem>
+                <SelectItem value="http">http</SelectItem>
+                <SelectItem value="https">https</SelectItem>
               </SelectGroup>
             </SelectContent>
           </Select>
@@ -434,17 +460,17 @@ const PingTestSettingsField = memo(function PingTestSettingsField({
               }
             }}
           >
-            <SelectTrigger className="min-w-0 flex-1 text-sm" aria-label="Хост">
+            <SelectTrigger className="min-w-0 flex-1" aria-label="Хост">
               {custom ? <span className="text-muted-foreground">Свой URL...</span> : <SelectValue />}
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
                 {PING_URL_PRESETS.map((item) => (
-                  <SelectItem key={item} value={item} className="text-sm">
+                  <SelectItem key={item} value={item}>
                     {item}
                   </SelectItem>
                 ))}
-                <SelectItem value={PING_URL_CUSTOM} className="text-muted-foreground text-sm">
+                <SelectItem value={PING_URL_CUSTOM} className="text-muted-foreground">
                   Свой URL...
                 </SelectItem>
               </SelectGroup>
@@ -473,7 +499,7 @@ const PingTestSettingsField = memo(function PingTestSettingsField({
       <Field className="px-0 py-3">
         <FieldContent>
           <FieldLabel htmlFor="ping-test-timeout">Таймаут</FieldLabel>
-          <FieldDescription className="text-[13px]">В мс, используется для ручного пинг-теста подключений</FieldDescription>
+          <FieldDescription className="text-[13px]">{timeoutDescription}</FieldDescription>
         </FieldContent>
         <InputGroup className="max-w-40">
           <InputGroupInput
@@ -677,6 +703,14 @@ export function SettingsModal() {
     [dispatch, saveSetting]
   )
 
+  const setPingMode = useCallback(
+    async (value: string) => {
+      const ok = await saveSetting('clash_api', { ping_mode: value })
+      if (ok) dispatch({ type: 'SET_SETTINGS', settings: { pingMode: value as PingMode } })
+    },
+    [dispatch, saveSetting]
+  )
+
   const setProxySortOrder = useCallback(
     async (value: string) => {
       const ok = await saveSetting('clash_api', { proxy_sort_order: value })
@@ -739,13 +773,13 @@ export function SettingsModal() {
                       items={Object.fromEntries(themeOptions.map((o) => [o.value, o.label]))}
                       onValueChange={setTheme}
                     >
-                      <SelectTrigger id="theme" className="w-34 text-sm">
+                      <SelectTrigger id="theme" className="w-34">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
                           {themeOptions.map((item) => (
-                            <SelectItem key={item.value} value={item.value} className="text-sm">
+                            <SelectItem key={item.value} value={item.value}>
                               {item.label}
                             </SelectItem>
                           ))}
@@ -773,15 +807,52 @@ export function SettingsModal() {
                       )}
                       onValueChange={setTimezone}
                     >
-                      <SelectTrigger id="timezone" className="w-30 text-sm">
+                      <SelectTrigger id="timezone" className="w-30">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
                           {Array.from({ length: 27 }, (_, i) => i - 12).map((offset) => (
-                            <SelectItem key={offset} value={String(offset)} className="text-sm">
+                            <SelectItem key={offset} value={String(offset)}>
                               UTC{offset >= 0 ? '+' : ''}
                               {offset}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Separator className="my-2" />
+                  <p className="text-muted-foreground pt-1 pb-1 text-xs font-medium tracking-wider uppercase">Тест подключений</p>
+                  <PingTestSettingsField
+                    key={`${settings.pingTestUrl}\x00${settings.pingTestTimeout}`}
+                    pingUrl={settings.pingTestUrl}
+                    pingTimeout={settings.pingTestTimeout}
+                    onSave={savePingTestSettings}
+                    showToast={showToast}
+                  />
+                  <Separator />
+                  <Field orientation="horizontal" className="px-0 py-3">
+                    <FieldContent>
+                      <FieldLabel htmlFor="ping-mode">Режим (Xray)</FieldLabel>
+                      <FieldDescription className="text-[13px] whitespace-pre-line">
+                        Двойной: первый запрос с закрытием соединения для прогрева DNS/MUX, второй - сам тест.{'\n'} KeepAlive: первое
+                        соединение не закрывается, второй запрос идёт по нему же.
+                      </FieldDescription>
+                    </FieldContent>
+                    <Select
+                      value={settings.pingMode}
+                      items={Object.fromEntries(pingModeOptions.map((o) => [o.value, o.label]))}
+                      onValueChange={setPingMode}
+                    >
+                      <SelectTrigger id="ping-mode" className="w-46.75">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {pingModeOptions.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
                             </SelectItem>
                           ))}
                         </SelectGroup>
@@ -795,7 +866,7 @@ export function SettingsModal() {
                 <Alert className="my-2 border-amber-500/20 bg-amber-100 p-2.75 text-yellow-600 dark:bg-[#2a1f0d] dark:text-amber-400">
                   <IconAlertCircle className="size-4.5" />
                   <AlertDescription className="text-xs leading-4.25 tracking-wide text-yellow-600 dark:text-amber-400">
-                    Функция экспериментальная. Перед включением сделайте бэкап конфигураций. Несовместимо с комментариями.
+                    При включении визуализации JSON-коментарии будут утеряны, рекомендуется создать бэкап конфигураций.
                   </AlertDescription>
                 </Alert>
 
@@ -833,7 +904,7 @@ export function SettingsModal() {
                       <FieldDescription className="text-[13px]">Порог таймаутов подряд для скрытия подключений (1–10)</FieldDescription>
                     </FieldContent>
                     <InputGroup className="w-15">
-                      <InputGroupInput id="hide-counter" readOnly className="text-sm" value={settings.hideUnavailableProxiesCounter} />
+                      <InputGroupInput id="hide-counter" readOnly value={settings.hideUnavailableProxiesCounter} />
                       <InputGroupAddon align="inline-end" className="flex flex-col gap-0">
                         <InputGroupButton
                           aria-label="Увеличить"
@@ -865,13 +936,13 @@ export function SettingsModal() {
                       items={Object.fromEntries(sortOrderOptions.map((o) => [o.value, o.label]))}
                       onValueChange={setProxySortOrder}
                     >
-                      <SelectTrigger id="proxy-sort" className="w-39 text-sm">
+                      <SelectTrigger id="proxy-sort" className="w-39">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
                           {sortOrderOptions.map((item) => (
-                            <SelectItem key={item.value} value={item.value} className="text-sm">
+                            <SelectItem key={item.value} value={item.value}>
                               {item.label}
                             </SelectItem>
                           ))}
@@ -879,14 +950,6 @@ export function SettingsModal() {
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Separator className="my-0" />
-                  <PingTestSettingsField
-                    key={`${settings.pingTestUrl}\x00${settings.pingTestTimeout}`}
-                    pingUrl={settings.pingTestUrl}
-                    pingTimeout={settings.pingTestTimeout}
-                    onSave={savePingTestSettings}
-                    showToast={showToast}
-                  />
                 </FieldGroup>
                 <Separator className="my-2" />
                 <p className="text-muted-foreground pt-3 pb-1 text-xs font-medium tracking-wider uppercase">Соединения</p>
@@ -915,20 +978,14 @@ export function SettingsModal() {
                         })
                       }}
                     >
-                      <SelectTrigger id="auto-dns" className="w-51 text-sm">
+                      <SelectTrigger id="auto-dns" className="w-51">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          <SelectItem value="disabled" className="text-sm">
-                            Выкл
-                          </SelectItem>
-                          <SelectItem value="enabled" className="text-sm">
-                            Вкл
-                          </SelectItem>
-                          <SelectItem value="with_filter" className="text-sm">
-                            Вкл с автонастройкой
-                          </SelectItem>
+                          <SelectItem value="disabled">Выкл</SelectItem>
+                          <SelectItem value="enabled">Вкл</SelectItem>
+                          <SelectItem value="with_filter">Вкл с автонастройкой</SelectItem>
                         </SelectGroup>
                       </SelectContent>
                     </Select>

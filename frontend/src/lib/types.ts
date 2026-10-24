@@ -1,4 +1,4 @@
-export const DEFAULT_PING_TEST_URL = 'https://www.gstatic.com/generate_204'
+export const DEFAULT_PING_TEST_URL = 'http://cp.cloudflare.com/generate_204'
 export const DEFAULT_PING_TEST_TIMEOUT = 5000
 export const DEFAULT_XRAY_REPO = 'https://github.com/XTLS/Xray-core'
 export const DEFAULT_MIHOMO_REPO = 'https://github.com/MetaCubeX/mihomo'
@@ -14,12 +14,15 @@ export interface Config {
 
 export type ProxySortOrder = 'default' | 'name' | 'ping'
 
+export type PingMode = 'single' | 'double' | 'double_keep_alive'
+
 export type AutoDnsMode = 'disabled' | 'enabled' | 'with_filter'
 
 export interface AppSettings {
   theme: ThemeMode
   autoApply: boolean
   guiRouting: boolean
+  guiOutbounds: boolean
   guiLog: boolean
   autoCheckUI: boolean
   autoCheckCore: boolean
@@ -31,6 +34,7 @@ export interface AppSettings {
   pingTestTimeout: number
   showSourceName: boolean
   closeConnectionsOnApply: boolean
+  pingMode: PingMode
   hideUnavailableProxies: boolean
   hideUnavailableProxiesCounter: number
   proxySortOrder: ProxySortOrder

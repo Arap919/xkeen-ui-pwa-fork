@@ -35,7 +35,7 @@ struct GhRelease {
 }
 
 enum DownloadResult {
-    RAM(Vec<u8>),
+    Ram(Vec<u8>),
     Disk(PathBuf),
 }
 
@@ -141,7 +141,7 @@ pub async fn fetch_latest_version(
             .map(|p| format!("{}/{}", p.trim_end_matches('/'), url)),
     );
 
-    let is_alpha = current_ver.map_or(false, |v| v.contains("alpha"));
+    let is_alpha = current_ver.is_some_and(|v| v.contains("alpha"));
 
     for u in list {
         let res = match client
@@ -157,7 +157,7 @@ pub async fn fetch_latest_version(
         if res
             .headers()
             .get("content-type")
-            .map_or(false, |v| v.to_str().unwrap_or("").contains("text/html"))
+            .is_some_and(|v| v.to_str().unwrap_or("").contains("text/html"))
         {
             continue;
         }
@@ -166,8 +166,8 @@ pub async fn fetch_latest_version(
             Err(_) => continue,
         };
 
-        if is_alpha && core == "mihomo" {
-            if let Some(r) = rels.iter().find(|r| r.tag_name == "Prerelease-Alpha") {
+        if is_alpha && core == "mihomo"
+            && let Some(r) = rels.iter().find(|r| r.tag_name == "Prerelease-Alpha") {
                 for asset in &r.assets {
                     if let Some(hash) = asset
                         .name
@@ -178,7 +178,6 @@ pub async fn fetch_latest_version(
                     }
                 }
             }
-        }
 
         if let Some(r) = rels.into_iter().find(|r| !r.prerelease) {
             let tag = r.tag_name.clone();
@@ -240,7 +239,7 @@ async fn download(
                     return Some(if is_disk {
                         DownloadResult::Disk(path.to_path_buf())
                     } else {
-                        DownloadResult::RAM(buf)
+                        DownloadResult::Ram(buf)
                     });
                 }
                 Ok(Some(Err(e))) => {
@@ -277,7 +276,7 @@ async fn download(
             Ok(r) if r.status().is_success() => {
                 if r.headers()
                     .get("content-type")
-                    .map_or(false, |v| v.to_str().unwrap_or("").contains("text/html"))
+                    .is_some_and(|v| v.to_str().unwrap_or("").contains("text/html"))
                 {
                     log(
                         "WARN",
@@ -310,7 +309,7 @@ async fn save(dl: DownloadResult, out_path: PathBuf) -> std::io::Result<()> {
     tokio::task::spawn_blocking(move || {
         let mut out = File::create(&out_path)?;
         match dl {
-            DownloadResult::RAM(d) => out.write_all(&d)?,
+            DownloadResult::Ram(d) => out.write_all(&d)?,
             DownloadResult::Disk(p) => {
                 std::io::copy(&mut File::open(&p)?, &mut out)?;
                 _ = std::fs::remove_file(p);
@@ -319,7 +318,7 @@ async fn save(dl: DownloadResult, out_path: PathBuf) -> std::io::Result<()> {
         out.sync_data()
     })
     .await
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+    .map_err(|e| std::io::Error::other(e.to_string()))?
 }
 
 async fn install_jq() -> Result<(), String> {
@@ -572,9 +571,13 @@ pub async fn post_update(State(state): State<AppState>, Json(req): Json<UpdateRe
             let mut entry: Option<String> = None;
             for i in 0..archive.len() {
                 if let Ok(f) = archive.by_index(i) {
-                    let base = f.name().rsplit('/').next().unwrap_or(f.name()).to_string();
-                    if !f.is_dir() && base.eq_ignore_ascii_case(core) {
-                        entry = Some(f.name().to_string());
+                    if f.is_dir() {
+                        continue;
+                    }
+                    let Ok(name) = f.name() else { continue };
+                    let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+                    if base.eq_ignore_ascii_case(core) {
+                        entry = Some(name.to_string());
                         break;
                     }
                 }
@@ -582,11 +585,10 @@ pub async fn post_update(State(state): State<AppState>, Json(req): Json<UpdateRe
             if entry.is_none() {
                 let mut files: Vec<String> = Vec::new();
                 for i in 0..archive.len() {
-                    if let Ok(f) = archive.by_index(i) {
-                        if !f.is_dir() {
-                            files.push(f.name().to_string());
+                    if let Ok(f) = archive.by_index(i)
+                        && let Ok(name) = f.name() {
+                            files.push(name.to_string());
                         }
-                    }
                 }
                 if files.len() == 1 {
                     entry = files.into_iter().next();
@@ -606,7 +608,7 @@ pub async fn post_update(State(state): State<AppState>, Json(req): Json<UpdateRe
     let unpack = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let bin = tmp_dir.join(&tmp_name);
         match dl_res {
-            DownloadResult::RAM(d) => unpack(Cursor::new(d), &bin, &core_name, is_zip)?,
+            DownloadResult::Ram(d) => unpack(Cursor::new(d), &bin, &core_name, is_zip)?,
             DownloadResult::Disk(p) => {
                 unpack(File::open(&p)?, &bin, &core_name, is_zip)?;
                 _ = std::fs::remove_file(p);
@@ -616,7 +618,7 @@ pub async fn post_update(State(state): State<AppState>, Json(req): Json<UpdateRe
     })
     .await;
 
-    if let Ok(Err(e)) | Err(e) = unpack.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) {
+    if let Ok(Err(e)) | Err(e) = unpack.map_err(|e| std::io::Error::other(e.to_string())) {
         return response(false, Some(format!("Ошибка распаковки: {}", e)));
     }
 
@@ -643,15 +645,14 @@ pub async fn post_update(State(state): State<AppState>, Json(req): Json<UpdateRe
             log("INFO", format!("Перезапуск {}...", core_cap));
             let log_len = fs::metadata(error_log_path()).await.map(|m| m.len()).unwrap_or(0) as usize;
             if let Err(e) = crate::controller::soft_restart(&req.core).await {
-                log("ERROR", format!("{}", e));
-                return response(false, Some(format!("{}", e)));
+                log("ERROR", e.to_string());
+                return response(false, Some(e.to_string()));
             }
-            if req.core == "mihomo" {
-                if let Err(e) = crate::controller::wait_mihomo_ready(log_len).await {
-                    log("ERROR", format!("{}", e));
-                    return response(false, Some(format!("{}", e)));
+            if req.core == "mihomo"
+                && let Err(e) = crate::controller::wait_mihomo_ready(log_len).await {
+                    log("ERROR", e.to_string());
+                    return response(false, Some(e.to_string()));
                 }
-            }
         }
     } else {
         log("WARN", "Атомарная замена не удалась, фолбек на копирование...".into());

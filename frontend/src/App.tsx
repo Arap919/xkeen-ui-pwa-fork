@@ -24,9 +24,11 @@ import { listMihomoTakenNames, replaceMihomoProvider, replaceMihomoProxy } from 
 import {
   fetchClashProxies,
   fetchClashRuleProviders,
+  fetchPingHistory,
   getAppState,
   syncClashApiPort,
   useAppActions,
+  useCurrentCore,
   useModalContext,
   useSettings,
 } from './lib/store'
@@ -112,6 +114,8 @@ const ModalManager = memo(function ModalManager({
 function AppContent({ onLogout }: { onLogout: () => void }) {
   const { dispatch, showToast } = useAppActions()
   const multiRouter = useSettings((s) => s.multiRouter)
+  const guiOutbounds = useSettings((s) => s.guiOutbounds)
+  const activeCore = useCurrentCore()
   const editorRef = useRef<CodeMirrorRef | null>(null)
   const configActionsRef = useRef<{ switchTab: (index: number) => void; getActiveIndex: () => number }>({
     switchTab: () => {},
@@ -238,6 +242,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           settings: {
             autoApply: data.gui.auto_apply,
             guiRouting: data.gui.routing,
+            guiOutbounds: data.gui.outbounds ?? false,
             guiLog: data.gui.log,
             autoCheckUI: data.updater.auto_check_ui ?? true,
             autoCheckCore: data.updater.auto_check_core ?? true,
@@ -249,6 +254,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
             pingTestTimeout: data.clash_api?.ping_timeout ?? DEFAULT_PING_TEST_TIMEOUT,
             showSourceName: data.clash_api?.show_source_name ?? false,
             closeConnectionsOnApply: data.clash_api?.close_connections_on_apply ?? false,
+            pingMode: data.clash_api?.ping_mode ?? 'double_keep_alive',
             hideUnavailableProxies: data.clash_api?.hide_unavailable_proxies ?? false,
             hideUnavailableProxiesCounter: data.clash_api?.hide_unavailable_proxies_counter ?? 3,
             proxySortOrder: data.clash_api?.proxy_sort_order ?? 'default',
@@ -277,6 +283,10 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 
     init()
   }, [checkStatus, loadConfigs, dispatch, showToast, checkVersion])
+
+  useEffect(() => {
+    if (activeCore === 'xray' && guiOutbounds) fetchPingHistory()
+  }, [activeCore, guiOutbounds])
 
   const onlineTargetsKey = useRoutersStore((s) => [LOCAL_ROUTER_ID, ...s.routers.map(routerId)].join('|'))
   useEffect(() => {

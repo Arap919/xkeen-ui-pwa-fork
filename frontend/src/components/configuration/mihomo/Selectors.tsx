@@ -8,7 +8,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import {
-  IconBoltFilled,
+  IconBolt,
   IconChevronDown,
   IconChevronUp,
   IconCircleArrowRightFilled,
@@ -410,7 +410,7 @@ const ProxyCard = memo(function ProxyCard({
                   ) : hasHistory ? (
                     delay || <GraveIcon size={14} />
                   ) : (
-                    <IconBoltFilled size={13} className="text-foreground" />
+                    <IconBolt size={13} className="text-foreground" />
                   )}
                 </span>
               }
@@ -563,7 +563,7 @@ const CollapsedProxyOption = memo(function CollapsedProxyOption({
                   if (!isTestingSingle) void onTestSingle(proxyName)
                 }}
               >
-                {isTestingSingle ? <Spinner /> : hasHistory ? delay || <GraveIcon size={14} /> : <IconBoltFilled className="size-3.5" />}
+                {isTestingSingle ? <Spinner /> : hasHistory ? delay || <GraveIcon size={14} /> : <IconBolt className="size-3.5" />}
               </button>
             }
           />
@@ -708,6 +708,7 @@ const SelectorRow = memo(function SelectorRow({
   const isSmart = isSmartType(selector.type)
   const selectedDelay = selectedProxy ? getLastDelay(selectedProxy) : null
   const showSelectedDelay = !!selectedProxy && selectedDelay !== null && selectedDelay > 0
+  const selectedDigits = showSelectedDelay && selectedDelay ? String(selectedDelay).length : 0
 
   const hideUnavailable = useSettings((s) => s.hideUnavailableProxies)
   const hideCounter = useSettings((s) => s.hideUnavailableProxiesCounter)
@@ -805,11 +806,12 @@ const SelectorRow = memo(function SelectorRow({
                 render={
                   <Button
                     variant="outline"
-                    size={showSelectedDelay ? 'sm' : 'icon-sm'}
+                    size={selectedDigits === 0 ? 'icon-sm' : 'sm'}
                     className={cn(
-                      showSelectedDelay && 'px-2 text-xs font-medium tabular-nums',
-                      showSelectedDelay && delayColor(selectedDelay)
+                      selectedDigits > 0 && 'min-w-8 justify-center px-0 text-xs font-medium tabular-nums',
+                      selectedDigits > 0 && delayColor(selectedDelay)
                     )}
+                    style={selectedDigits > 0 ? { width: `calc(${selectedDigits}ch + 1rem)` } : undefined}
                     onClick={() => onTestAll(selectorName)}
                     disabled={isTesting}
                   >
@@ -818,7 +820,7 @@ const SelectorRow = memo(function SelectorRow({
                     ) : showSelectedDelay ? (
                       selectedDelay
                     ) : (
-                      <IconBoltFilled size={13} />
+                      <IconBolt size={13} />
                     )}
                   </Button>
                 }
