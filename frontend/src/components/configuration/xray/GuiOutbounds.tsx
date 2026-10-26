@@ -1,11 +1,23 @@
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover'
-import { IconBolt, IconCode, IconDeviceFloppy, IconGripVertical, IconPlus, IconTrash, IconX } from '@tabler/icons-react'
+import { Kbd } from '@/components/ui/kbd'
+import {
+  IconBolt,
+  IconCode,
+  IconCodeDots,
+  IconCornerDownLeft,
+  IconDeviceFloppy,
+  IconGripVertical,
+  IconPlugX,
+  IconTrash,
+  IconX,
+} from '@tabler/icons-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiCall } from '../../../lib/api'
 import { appendPingEntries, clearPingHistory, useAppActions, usePingHistoryStore, type PingEntry } from '../../../lib/store'
@@ -13,7 +25,7 @@ import type { Config } from '../../../lib/types'
 import { cn, copyText } from '../../../lib/utils'
 import { parse as parseJsonc } from 'jsonc-parser'
 import type { CodeMirrorRef } from '../CodeMirror'
-import { ProviderEditor } from '../editor/ProviderEditor'
+import { ProviderEditor, type ProviderEditorHandle } from '../editor/ProviderEditor'
 
 type Outbound = Record<string, any>
 
@@ -149,20 +161,17 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
   const [link, setLink] = useState('')
   const [isPingingAll, setIsPingingAll] = useState(false)
   const outboundsRef = useRef<Outbound[]>(outbounds)
-  // «Чистый» список аутбаундов: актуален на момент открытия вкладки/последней синхронизации.
-  // Если drag-перестановка вернула всё на прежние места, в редактор не пишем — конфиг не станет dirty.
   const cleanListRef = useRef<Outbound[]>(outbounds)
   const inFlightRef = useRef<Set<string>>(new Set())
   const cardRefs = useRef<(HTMLDivElement | null)[]>([])
   const cardRefHandlersRef = useRef<Record<number, (el: HTMLDivElement | null) => void>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
-  // Модалка редактирования JSON аутбаунда
   const [editing, setEditing] = useState<{ index: number; tag: string; key: number } | null>(null)
   const [editContent, setEditContent] = useState('')
-  // Исходный текст черновика: разница с editContent — признак изменений для кнопки сохранения.
   const [editOriginal, setEditOriginal] = useState('')
   const [editError, setEditError] = useState<string | undefined>(undefined)
+  const editEditorRef = useRef<ProviderEditorHandle>(null)
 
   const getCardRef = useCallback((index: number) => {
     if (!cardRefHandlersRef.current[index]) {
@@ -175,7 +184,6 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
 
   useEffect(() => {
     const list = parseOutbounds(configs[activeConfigIndex]?.content ?? '')
-    // Контент мог обновиться из syncToEditor этой же вкладки — список совпал, перерисовку не трогаем.
     if (JSON.stringify(list) === JSON.stringify(outboundsRef.current)) return
     outboundsRef.current = list
     cleanListRef.current = list
@@ -183,7 +191,6 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConfigIndex, configs])
 
-  /** Записывает список аутбаундов обратно в активный конфиг в редакторе. */
   const syncToEditor = useCallback(
     (list: Outbound[]) => {
       cleanListRef.current = list
@@ -270,15 +277,16 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
   )
 
   const handlePingAll = useCallback(async () => {
-    // Служебные аутбаунды (blackhole/dns/loopback) и объекты без тега не пингуем —
-    // бэкенд фильтрует так же.
     const targets = outboundsRef.current.filter(
       (outbound) =>
-        outbound.protocol !== 'blackhole' && outbound.protocol !== 'dns' && outbound.protocol !== 'loopback' && typeof outbound.tag === 'string' && outbound.tag
+        outbound.protocol !== 'blackhole' &&
+        outbound.protocol !== 'dns' &&
+        outbound.protocol !== 'loopback' &&
+        typeof outbound.tag === 'string' &&
+        outbound.tag
     )
     if (targets.length === 0) return
     setIsPingingAll(true)
-    // Спиннер на каждой пингуемой карточке, пока идёт общий замер.
     setTesting((prev) => {
       const next = { ...prev }
       for (const { tag } of targets) next[tag] = true
@@ -379,17 +387,24 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
   const isValidLink = OUTBOUND_LINK_PREFIXES.some((prefix) => link.trim().toLowerCase().startsWith(prefix))
   const isDraftDirty = editing != null && editContent !== editOriginal
   const draftSaveDisabled = !isDraftDirty || !!editError
-  const draftSaveHint = editError ? `Исправьте ошибки JSON: ${editError}` : !isDraftDirty ? 'Нет изменений' : 'Сохранить (Ctrl+S)'
+  const draftFormatDisabled = !!editError
 
   return (
     <TooltipProvider delayDuration={500}>
       <div className="absolute inset-4 -mb-2 flex flex-col">
         <div ref={scrollRef} className="flex min-h-0 flex-1 scrollbar-thin flex-col gap-2 overflow-y-auto pb-2">
           {outbounds.length === 0 ? (
-            <div className="text-muted-foreground mt-6 flex flex-col items-center gap-1 text-sm">
-              <span>Аутбаунды не найдены</span>
-              <span className="text-muted-foreground/60 text-xs">Добавьте подключение через «Утилиты → Добавить подключение»</span>
-            </div>
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <IconPlugX />
+                </EmptyMedia>
+                <EmptyTitle>Подключения не найдены</EmptyTitle>
+                <EmptyDescription>
+                  Импортируйте шаблон Outbounds «Утилиты → Шаблоны конфигураций», затем вставьте ссылку в поле ниже
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           ) : (
             <div className="flex flex-col gap-2">
               {outbounds.map((ob, index) => {
@@ -438,17 +453,27 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
                 </Button>
               </InputGroupAddon>
             )}
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton
+                className="rounded-sm"
+                variant="default"
+                disabled={!isValidLink}
+                onClick={addOutbound}
+                aria-label="Добавить подключение"
+              >
+                <span className="hidden text-xs sm:inline">Добавить</span>
+                <IconCornerDownLeft />
+              </InputGroupButton>
+            </InputGroupAddon>
           </InputGroup>
-          <Button variant="outline" disabled={!isValidLink} onClick={addOutbound} aria-label="Добавить подключение">
-            <IconPlus /> <span className="hidden sm:inline">Добавить</span>
-          </Button>
           <Button
             variant="outline"
             disabled={isPingingAll || outbounds.length === 0}
             onClick={handlePingAll}
             aria-label="Тест всех подключений"
           >
-            {isPingingAll ? <Spinner className="size-4" /> : <IconBolt />} <span className="hidden sm:inline">Тест всех</span>
+            {isPingingAll ? <Spinner data-icon="inline-start" /> : <IconBolt data-icon="inline-start" />}{' '}
+            <span className="hidden sm:inline">Тест всех</span>
           </Button>
         </div>
       </div>
@@ -463,8 +488,8 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
         <DialogContent className="w-full max-w-[95vw]! md:w-[min(80vw,700px)]">
           <div className="flex h-[54dvh] flex-col gap-4 overflow-hidden md:h-[50dvh]">
             <DialogHeader className="shrink-0">
-              <DialogTitle className="flex items-center gap-2 pr-8 pb-3">
-                <IconCode size={20} className="text-chart-2" />
+              <DialogTitle className="flex items-center gap-2">
+                <IconCodeDots size={24} className="text-chart-2" />
                 {editing?.tag || `#${(editing?.index ?? 0) + 1}`}
               </DialogTitle>
             </DialogHeader>
@@ -472,6 +497,7 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
               {editing != null && (
                 <>
                   <ProviderEditor
+                    ref={editEditorRef}
                     key={editing.key}
                     content={editContent}
                     language="json"
@@ -480,25 +506,59 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
                     onSave={() => saveEdit()}
                     onValidationChange={setEditError}
                   />
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <span className="absolute right-3 bottom-3 z-10">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="border-border/60 bg-background/40 hover:bg-background/70 supports-backdrop-filter:bg-background/40 gap-1.5 px-3 shadow-lg shadow-black/20 backdrop-blur-xl backdrop-saturate-150"
-                            onClick={() => saveEdit()}
-                            disabled={draftSaveDisabled}
-                          >
-                            <IconDeviceFloppy />
-                            <span className="text-xs font-medium">Сохранить</span>
-                          </Button>
-                        </span>
-                      }
-                    />
-                    <TooltipContent side="left">{draftSaveHint}</TooltipContent>
-                  </Tooltip>
+                  <span className="absolute right-3 bottom-3 z-10 flex items-center gap-1.5">
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <span>
+                            <Button
+                              size="icon-lg"
+                              variant="ghost"
+                              className="border-border/60 bg-background/40 hover:bg-background/70 rounded-lg backdrop-blur-md"
+                              onClick={() => void editEditorRef.current?.format()}
+                              disabled={draftFormatDisabled}
+                            >
+                              <IconCode className="size-5" />
+                            </Button>
+                          </span>
+                        }
+                      />
+                      <TooltipContent side="top">
+                        Форматировать JSON <Kbd>Shift+Alt+F</Kbd>
+                      </TooltipContent>
+                    </Tooltip>
+                    {draftSaveDisabled ? (
+                      <Button
+                        size="icon-lg"
+                        variant="ghost"
+                        className="border-border/60 bg-background/40 hover:bg-background/70 rounded-lg backdrop-blur-md"
+                        onClick={() => saveEdit()}
+                        disabled
+                      >
+                        <IconDeviceFloppy className="size-5" />
+                      </Button>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span>
+                              <Button
+                                size="icon-lg"
+                                variant="ghost"
+                                className="border-border/60 bg-background/40 hover:bg-background/70 rounded-lg backdrop-blur-md"
+                                onClick={() => saveEdit()}
+                              >
+                                <IconDeviceFloppy className="size-5" />
+                              </Button>
+                            </span>
+                          }
+                        />
+                        <TooltipContent side="top" className="whitespace-nowrap">
+                          Сохранить изменения <Kbd>Ctrl+S</Kbd>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </span>
                 </>
               )}
             </div>
@@ -591,7 +651,7 @@ const OutboundCard = memo(function OutboundCard({
             <TooltipTrigger
               render={
                 <Button variant="outline" size="icon-sm" onClick={() => onEdit(index)} aria-label="Редактировать JSON">
-                  <IconCode />
+                  <IconCodeDots className="size-4.5" />
                 </Button>
               }
             />
@@ -674,7 +734,7 @@ const OutboundCard = memo(function OutboundCard({
                   <div className="flex min-w-35 flex-col gap-1">
                     {entries.map((entry, i) => (
                       <div key={i} className="flex flex-col">
-                        <div className="flex items-center justify-between gap-3 text-[13px]">
+                        <div className="flex items-center justify-between gap-3">
                           <span className="tabular-nums">{formatEntryTime(entry.time)}</span>
                           <span className={cn('font-medium tabular-nums', delayColor(entry.delay))}>
                             {entry.delay ? `${entry.delay}ms` : '—'}
