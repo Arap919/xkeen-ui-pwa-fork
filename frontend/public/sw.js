@@ -76,3 +76,33 @@ self.addEventListener('fetch', (event) => {
     ),
   )
 })
+
+
+self.addEventListener('push', (event) => {
+  let payload = {}
+  try { payload = event.data?.json() ?? {} } catch { /* Use the safe default notification. */ }
+  event.waitUntil(self.registration.showNotification(
+    typeof payload.title === 'string' ? payload.title : 'Обновление router-watchdog',
+    {
+      body: typeof payload.body === 'string' ? payload.body : 'Откройте панель для проверки обновления.',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      tag: 'router-watchdog-update',
+      data: { url: '/#watchdog-update' },
+    },
+  ))
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const target = new URL('/#watchdog-update', self.location.origin).href
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (windows) => {
+    for (const client of windows) {
+      if (new URL(client.url).origin === self.location.origin && 'focus' in client) {
+        await client.navigate(target)
+        return client.focus()
+      }
+    }
+    return self.clients.openWindow(target)
+  }))
+})

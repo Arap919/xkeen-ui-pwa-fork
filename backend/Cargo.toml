@@ -58,6 +58,10 @@ yaml-rust2 = { version = "0.13", default-features = false }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 semver = "1.0.28"
 
+web-push-native = "0.5"
+base64 = "0.22"
+p256 = { version = "0.13", features = ["pem"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 
