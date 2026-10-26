@@ -70,6 +70,7 @@ const GuiOutbounds = lazyLoad(() => import('./xray/GuiOutbounds'), 'GuiOutbounds
 const ConnectionsPanel = lazyLoad(() => import('./mihomo/Connections'), 'ConnectionsPanel')
 const SelectorsPanel = lazyLoad(() => import('./mihomo/Selectors'), 'SelectorsPanel')
 import { DnsPanel } from './mihomo/DnsPanel'
+import { Kbd } from '../ui/kbd'
 const CodeMirrorEditorLazy = lazyLoad(() => import('./CodeMirror'), 'CodeMirrorEditor')
 
 const BackupsModalContainer = memo(function BackupsModalContainer({ onRefreshConfigs }: { onRefreshConfigs: () => Promise<unknown> }) {
@@ -112,6 +113,7 @@ interface ConfigTabProps {
   showToast: (msg: string, type?: 'success' | 'error') => void
   onRefreshConfigs: () => Promise<Config[]>
   withContextMenu?: boolean
+  onHideFile?: (file: string) => void
 }
 
 type DialogState =
@@ -120,7 +122,7 @@ type DialogState =
   | { type: 'delete'; file: string }
   | null
 
-function ConfigTab({ config, currentCore, showToast, onRefreshConfigs, withContextMenu = false }: ConfigTabProps) {
+function ConfigTab({ config, currentCore, showToast, onRefreshConfigs, onHideFile, withContextMenu = false }: ConfigTabProps) {
   const [dialogData, setDialogData] = useState<DialogState>(null)
   const [popoverOpen, setPopoverOpen] = useState(false)
 
@@ -240,9 +242,14 @@ function ConfigTab({ config, currentCore, showToast, onRefreshConfigs, withConte
           >
             <IconPencil /> Переименовать
           </ContextMenuItem>
+          {onHideFile && (
+            <ContextMenuItem onSelect={() => onHideFile(config.file)}>
+              <IconEyeOff /> Скрыть файл
+            </ContextMenuItem>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem disabled={isProtected} variant="destructive" onSelect={() => openDialog({ type: 'delete', file: config.file })}>
-            <IconTrash /> Удалить
+            <IconTrash /> Удалить файл
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -309,6 +316,7 @@ export function ConfigPanel({
   const guiOutbounds = useSettings((s) => s.guiOutbounds)
   const multiRouter = useSettings((s) => s.multiRouter)
   const closeConnsOnApply = useSettings((s) => s.closeConnectionsOnApply)
+  const hiddenConfigFiles = useSettings((s) => s.hiddenConfigFiles)
   const applyTargets = useRoutersStore((s) => s.applyTargets)
   const getMassTargets = () => {
     if (!multiRouter) return [LOCAL_ROUTER_ID]
@@ -328,8 +336,10 @@ export function ConfigPanel({
   const activeConfigIndex = useMemo(() => {
     if (!configs.length) return 0
     const idx = configs.findIndex((c) => c.file === activeConfigFile)
-    return idx >= 0 ? idx : 0
-  }, [configs, activeConfigFile])
+    if (idx >= 0 && !hiddenConfigFiles.includes(activeConfigFile)) return idx
+    const firstVisible = configs.findIndex((c) => !hiddenConfigFiles.includes(c.file))
+    return firstVisible >= 0 ? firstVisible : 0
+  }, [configs, activeConfigFile, hiddenConfigFiles])
   const [validationState, setValidationState] = useState<{ isValid: boolean; error?: string } | null>(null)
 
   const [isEditorMounted, setIsEditorMounted] = useState(false)
@@ -509,7 +519,11 @@ export function ConfigPanel({
 
     const targetFile = currentCfg?.file ?? activeConfigFile
     const nextConfigs = await onRefreshConfigs()
-    const nextConfig = nextConfigs.find((config) => config.file === targetFile) ?? nextConfigs[0]
+    const target = nextConfigs.find((config) => config.file === targetFile)
+    const nextConfig =
+      target && !hiddenConfigFiles.includes(target.file)
+        ? target
+        : (nextConfigs.find((config) => !hiddenConfigFiles.includes(config.file)) ?? nextConfigs[0])
 
     if (nextConfig) {
       if (nextConfig.file !== activeConfigFile) {
@@ -520,7 +534,7 @@ export function ConfigPanel({
     }
 
     return nextConfigs
-  }, [activeConfigFile, loadConfigIntoEditor, onRefreshConfigs, saveViewState])
+  }, [activeConfigFile, hiddenConfigFiles, loadConfigIntoEditor, onRefreshConfigs, saveViewState])
 
   const switchTab = useCallback(
     (index: number) => {
@@ -818,8 +832,6 @@ export function ConfigPanel({
     }
   }, [guiLog, fileForGui, contentForGui])
 
-  // Аутбаунды живут не только в файлах с "outbound" в имени — импорт подключений ищет первый файл
-  // с массивом outbounds. Поэтому гейт по содержимому, с приоритетом Routing/Log GUI.
   const isOutboundsGui = useMemo(() => {
     if (!guiOutbounds || !fileForGui || isRoutingGui || isLogGui) return false
     try {
@@ -832,8 +844,38 @@ export function ConfigPanel({
 
   const isAnyGui = isRoutingGui || isLogGui || isOutboundsGui
 
-  const coreConfigs = configs.filter((c) => !isXkeenFile(c.file))
-  const xkeenConfigs = configs.filter((c) => isXkeenFile(c.file))
+  const coreConfigs = configs.filter((c) => !isXkeenFile(c.file) && !hiddenConfigFiles.includes(c.file))
+  const xkeenConfigs = configs.filter((c) => isXkeenFile(c.file) && !hiddenConfigFiles.includes(c.file))
+
+  const hideConfigFile = useCallback(
+    async (file: string) => {
+      const visibleCount = configs.filter((c) => c.file !== file && !hiddenConfigFiles.includes(c.file)).length
+      if (visibleCount === 0) {
+        showToast('Нельзя скрыть последний файл', 'error')
+        return
+      }
+      const next = hiddenConfigFiles.includes(file) ? hiddenConfigFiles : [...hiddenConfigFiles, file]
+      try {
+        const result = await apiCall<{ success: boolean; error?: string }>('PATCH', 'settings', { ui: { hidden_files: next } })
+        if (!result.success) {
+          showToast(`Ошибка: ${result.error}`, 'error')
+          return
+        }
+        dispatch({ type: 'SET_SETTINGS', settings: { hiddenConfigFiles: next } })
+        showToast('Файл успешно скрыт. Скрытый файл можно вернуть в настройках', 'success')
+        if (activeConfigFile === file) {
+          const nextFile = configs.find((c) => !isXkeenFile(c.file) && c.file !== file && !next.includes(c.file))?.file ?? ''
+          if (nextFile) {
+            setActiveConfigFile(nextFile)
+            localStorage.setItem('lastSelectedTab', nextFile)
+          }
+        }
+      } catch (e: any) {
+        showToast(e.message, 'error')
+      }
+    },
+    [configs, hiddenConfigFiles, activeConfigFile, dispatch, showToast]
+  )
 
   const isMihomo = isCoreMihomo && (!!activeClashApiPort || !!activeClashApiUnix)
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 768
@@ -845,7 +887,7 @@ export function ConfigPanel({
   ]
 
   return (
-    <TooltipProvider delayDuration={500}>
+    <TooltipProvider delayDuration={700} timeout={0}>
       <>
         <div className="border-border bg-card flex flex-col overflow-hidden rounded-xl border md:min-h-0 md:flex-1">
           <div className={cn('flex shrink-0 flex-col gap-2 px-3 pt-3 sm:px-4 sm:pt-4 md:flex-row md:items-start')}>
@@ -988,6 +1030,7 @@ export function ConfigPanel({
                             currentCore={currentCore}
                             showToast={showToast}
                             onRefreshConfigs={refreshConfigsAndEditor}
+                            onHideFile={(file) => void hideConfigFile(file)}
                             withContextMenu
                           />
                         ))}
@@ -1122,9 +1165,18 @@ export function ConfigPanel({
                       />
                       <TooltipContent>Сохранить и перезапустить</TooltipContent>
                     </Tooltip>
-                    <Button size="default" disabled={!canSave} onClick={() => saveCurrentConfig()}>
-                      <IconDeviceFloppy data-icon="inline-start" /> Сохранить
-                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <Button size="default" disabled={!canSave} onClick={() => saveCurrentConfig()}>
+                            <IconDeviceFloppy data-icon="inline-start" /> Сохранить
+                          </Button>
+                        }
+                      />
+                      <TooltipContent>
+                        Сохранить файл <Kbd>Ctrl+S</Kbd>
+                      </TooltipContent>
+                    </Tooltip>
                     <Tooltip>
                       <TooltipTrigger
                         render={
@@ -1133,7 +1185,9 @@ export function ConfigPanel({
                           </Button>
                         }
                       />
-                      <TooltipContent>Форматировать файл</TooltipContent>
+                      <TooltipContent>
+                        Форматировать файл <Kbd>Shift+Alt+F</Kbd>
+                      </TooltipContent>
                     </Tooltip>
                     <DropdownMenu>
                       <DropdownMenuTrigger
@@ -1174,7 +1228,7 @@ export function ConfigPanel({
                               tabIndex={-1}
                               className="ml-auto size-5 rounded-[min(var(--radius-md),6px)]"
                             >
-                              <IconBoltFilled />
+                              <IconBoltFilled className="size-3.5" />
                             </Button>
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={onOpenGeoScan}>

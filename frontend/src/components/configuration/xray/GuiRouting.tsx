@@ -83,12 +83,23 @@ function collectTags(content: string | undefined, read: (json: any) => any[] | u
   }
 }
 
-function readAvailable(configs: Config[], activeContent: string): AvailableTags {
-  const findContent = (name: string) => configs.find((config) => config.file.toLowerCase().includes(name))?.content
+function readAvailable(configs: Config[]): AvailableTags {
+  const merged = (get: (json: any) => any[] | undefined): string[] => {
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const config of configs) {
+      for (const tag of collectTags(config.content, get)) {
+        if (seen.has(tag)) continue
+        seen.add(tag)
+        result.push(tag)
+      }
+    }
+    return result
+  }
   return {
-    outbounds: collectTags(findContent('outbound'), (json) => json.outbounds),
-    inbounds: collectTags(findContent('inbound'), (json) => json.inbounds),
-    balancers: collectTags(activeContent, (json) => json.routing?.balancers),
+    outbounds: merged((json) => json.outbounds),
+    inbounds: merged((json) => json.inbounds),
+    balancers: merged((json) => json.routing?.balancers),
   }
 }
 
@@ -104,7 +115,7 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
   const autoApply = useSettings((s) => s.autoApply)
   const getActiveContent = () => configs[activeConfigIndex]?.content ?? editorRef.current?.getValue() ?? ''
   const [rules, setRules] = useState<Rule[]>(() => parseRules(getActiveContent()))
-  const [available, setAvailable] = useState<AvailableTags>(() => readAvailable(configs, getActiveContent()))
+  const [available, setAvailable] = useState<AvailableTags>(() => readAvailable(configs))
   const configsRef = useRef(configs)
   const activeConfigIndexRef = useRef(activeConfigIndex)
   const autoApplyRef = useRef(autoApply)
@@ -131,13 +142,14 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
     const parsed = parseRules(content)
     rulesRef.current = parsed
     setRules(parsed)
-    setAvailable(readAvailable(configs, content))
+    setAvailable(readAvailable(configsRef.current))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConfigIndex])
 
   useEffect(() => {
     configsRef.current = configs
     activeConfigIndexRef.current = activeConfigIndex
+    setAvailable(readAvailable(configs))
   }, [configs, activeConfigIndex])
 
   useEffect(() => {
@@ -536,7 +548,7 @@ const RuleCard = memo(
               >
                 <SelectTrigger
                   popper
-                  className="border-border bg-input-background hover:bg-muted flex h-9 w-fit shrink-0 items-center justify-between gap-2 rounded-md border px-3 text-[13px] font-medium transition-colors focus:ring-0"
+                  className="border-border bg-input-background hover:bg-muted flex h-9 w-fit shrink-0 items-center justify-between gap-2 rounded-md border px-3 font-medium transition-colors focus:ring-0"
                 >
                   <SelectValue placeholder={fieldName} />
                 </SelectTrigger>
@@ -544,7 +556,7 @@ const RuleCard = memo(
                 <SelectContent position="popper" align="start">
                   <SelectGroup>
                     {otherFields.map((f) => (
-                      <SelectItem key={f} value={f} className="cursor-pointer text-[13px]">
+                      <SelectItem key={f} value={f} className="cursor-pointer">
                         {f}
                       </SelectItem>
                     ))}
@@ -623,16 +635,16 @@ const RuleCard = memo(
           <Select value={outboundType} onValueChange={(v) => switchOutbound(v as 'outboundTag' | 'balancerTag')}>
             <SelectTrigger
               popper
-              className="min-w-34 shrink-0 border-blue-500/40 text-[13px] font-bold text-blue-400 transition-colors hover:bg-blue-500/10 [&>svg]:text-blue-400/60"
+              className="min-w-34 shrink-0 border-blue-500/40 font-bold text-blue-400 transition-colors hover:bg-blue-500/10 [&>svg]:text-blue-400/60"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent position="popper" className="border-blue-500/40">
               <SelectGroup>
-                <SelectItem value="outboundTag" className="text-[13px] font-medium">
+                <SelectItem value="outboundTag" className="font-medium">
                   outboundTag
                 </SelectItem>
-                <SelectItem value="balancerTag" className="text-[13px] font-medium">
+                <SelectItem value="balancerTag" className="font-medium">
                   balancerTag
                 </SelectItem>
               </SelectGroup>
@@ -642,7 +654,7 @@ const RuleCard = memo(
           <Select value={outboundValue} onValueChange={changeOutboundValue}>
             <SelectTrigger
               popper
-              className="min-w-0 flex-1 border-blue-500/40 text-[13px] transition-colors hover:bg-blue-500/10 [&>svg]:text-blue-400/60"
+              className="min-w-0 flex-1 border-blue-500/40 transition-colors hover:bg-blue-500/10 [&>svg]:text-blue-400/60"
             >
               <SelectValue placeholder="Выберите outbound..." />
             </SelectTrigger>
@@ -654,7 +666,7 @@ const RuleCard = memo(
                   </div>
                 ) : (
                   (isBalancer ? available.balancers : available.outbounds).map((tag) => (
-                    <SelectItem key={tag} value={tag} className="text-[13px]">
+                    <SelectItem key={tag} value={tag}>
                       {tag}
                     </SelectItem>
                   ))
@@ -801,7 +813,7 @@ function BadgeInput({ badges, placeholder, fieldType, onAdd, onRemove, onRemoveF
           }}
           onBlur={() => commitNew(input)}
           placeholder={badges.length === 0 ? placeholder : ''}
-          className="placeholder:text-muted-foreground/50 min-w-5 flex-1 bg-transparent pr-1 pl-1 outline-none placeholder:text-[13px] md:text-[13px]"
+          className="placeholder:text-muted-foreground/50 min-w-5 flex-1 bg-transparent pr-1 pl-1 outline-none"
         />
       )}
       <button
