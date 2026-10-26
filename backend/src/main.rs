@@ -16,6 +16,7 @@ mod types;
 mod updater;
 mod version;
 mod websocket;
+mod watchdog;
 use crate::logger::{log, ts};
 use crate::types::*;
 use axum::http::StatusCode;
@@ -483,6 +484,7 @@ async fn main() {
         rci_token,
     };
     version::start_update_checker(state.clone());
+    watchdog::start_checker();
 
     if let Some(ref _token) = state.rci_token {
         log("INFO", "RCI токен успешно загружен".into());
@@ -550,6 +552,9 @@ async fn main() {
         .route("/api/healthcheck/all", post(healthchecker::post_healthcheck_all))
         .route("/api/device-list", get(api_relay::get_device_list))
         .route("/api/update", post(updater::post_update))
+        .route("/api/watchdog/update", get(watchdog::get_status).post(watchdog::install))
+        .route("/api/watchdog/push-key", post(watchdog::push_key))
+        .route("/api/watchdog/subscription", post(watchdog::subscribe).delete(watchdog::unsubscribe))
         .route("/api/geo", get(geo::get_geo))
         .route("/api/geo/site", get(geo::get_geosite))
         .route("/api/geo/ip", get(geo::get_geoip))

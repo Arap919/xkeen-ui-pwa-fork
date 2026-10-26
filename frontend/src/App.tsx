@@ -14,6 +14,7 @@ import { SettingsModal } from './components/modals/Settings'
 import { TemplateModal } from './components/modals/Templates'
 import { UpdateModal } from './components/modals/Update'
 import { StatusBar } from './components/status/StatusBar'
+import { WatchdogUpdates } from './components/status/WatchdogUpdates'
 import { Toast } from './components/ui/toast'
 import { apiCall, capitalize } from './lib/api'
 import { useLazyMount } from './lib/loader'
@@ -538,6 +539,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
             }}
             onLogout={logout}
           />
+          <WatchdogUpdates />
           <ConfigPanel
             editorRef={editorRef}
             configActionsRef={configActionsRef}

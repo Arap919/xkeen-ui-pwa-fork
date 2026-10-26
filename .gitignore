@@ -38,3 +38,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Private local configuration and Web Push credentials
+.env
+*.key
+credentials.json
+secrets/
+watchdog-push.json
