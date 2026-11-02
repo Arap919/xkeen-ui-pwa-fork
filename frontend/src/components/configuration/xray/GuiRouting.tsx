@@ -1,15 +1,34 @@
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ClearIcon } from '@/components/ui/clear-icon'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { IconCheck, IconGripVertical, IconPencil, IconPlus, IconTrash, IconX } from '@tabler/icons-react'
-import { forwardRef, memo, useCallback, useEffect, useRef, useState } from 'react'
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput, InputGroupText } from '@/components/ui/input-group'
+import { Kbd } from '@/components/ui/kbd'
+import { Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover'
+import { ProviderEditor, type ProviderEditorHandle } from '../editor/ProviderEditor'
+import {
+  IconArrowsShuffle,
+  IconCheck,
+  IconCode,
+  IconCodeDots,
+  IconDeviceFloppy,
+  IconGripVertical,
+  IconInfoCircle,
+  IconPencil,
+  IconPlus,
+  IconTrash,
+} from '@tabler/icons-react'
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiCall } from '../../../lib/api'
 import { useAppActions, useCoreRuntimeState, useSettings } from '../../../lib/store'
 import type { Config } from '../../../lib/types'
 import { cn } from '../../../lib/utils'
 import { parse as parseJsonc } from 'jsonc-parser'
 import type { CodeMirrorRef } from '../CodeMirror'
+import { IndexBadge } from './IndexBadge'
 
 const RULE_FIELDS = {
   domain: {
@@ -35,14 +54,62 @@ const RULE_FIELDS = {
 type FieldName = keyof typeof RULE_FIELDS
 type Rule = Record<string, any>
 
-function parseRules(content: string): Rule[] {
+type Balancer = Record<string, any>
+
+const DOMAIN_STRATEGIES = ['AsIs', 'IPIfNonMatch', 'IPOnDemand']
+const BALANCER_STRATEGIES = ['random', 'roundRobin', 'leastPing', 'leastLoad']
+const BALANCER_INFO: Record<string, string> = {
+  selector:
+    'Префиксы строк, используемые для сопоставления с outboundTag. Например, для outboundTag "a", "ab", "c", "ba" селектор "a" соответствует outboundTag "a" и "ab". Отобранные подключения будут включены в балансер.',
+  strategy:
+    'random — подключение выбирается случайно.\nroundRobin — подключение выбирается по очереди.\nleastPing — выбирается подключение с наименьшей задержкой; требуется observatory/burstObservatory, узлы без данных наблюдения исключаются.\nleastLoad — выбирается самое стабильное подключение; требуется observatory/burstObservatory, узлы без данных наблюдения исключаются.',
+  expected: 'Количество подключений, отбираемых балансировщиком. Трафик будет распределён между ними случайным образом.',
+  maxRTT: 'Максимально допустимое время RTT (задержки) при измерении скорости.',
+  tolerance: 'Максимально допустимая доля неудачных измерений скорости. Например, 0.01 означает, что допустим 1% неудачных измерений.',
+  baselines: 'Максимально допустимое стандартное отклонение времени RTT при измерении скорости.',
+  costs:
+    'Необязательный массив, позволяющий задать веса для подключений.\nmatch — сопоставление Tag исходящего соединения.\nregexp — использовать ли регулярные выражения для выбора Tag.\nvalue — значение веса. Чем больше значение, тем менее вероятно, что узел будет выбран.',
+  regexp: 'Использовать ли регулярные выражения для выбора Tag.',
+  fallbackTag:
+    'Если на основе результатов observatory все подключения оказываются недоступными, будет использовано подключение, выбранное здесь.',
+}
+
+const LEAST_LOAD_FIELDS = [
+  { key: 'expected', type: 'number', placeholder: '2', info: BALANCER_INFO.expected },
+  { key: 'maxRTT', type: 'text', placeholder: '1s', info: BALANCER_INFO.maxRTT },
+  { key: 'tolerance', type: 'number', placeholder: '0.01', info: BALANCER_INFO.tolerance },
+] as const
+const NO_SPINNERS_CLASS =
+  '[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+const ADD_BUTTON_CLASS =
+  'text-muted-foreground border-ring/60 hover:border-chart-2 mt-1 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border-2 border-dashed px-3 py-2.5 text-sm font-medium transition-colors hover:border-solid hover:text-[#60a5fa]'
+
+function parseRouting(content: string) {
+  let routing: Record<string, any> = {}
   try {
-    const json = parseJsonc(content)
-    if (json?.routing?.rules && Array.isArray(json.routing.rules)) return JSON.parse(JSON.stringify(json.routing.rules))
+    routing = parseJsonc(content)?.routing ?? {}
   } catch {
     /* */
   }
-  return []
+  return {
+    rules: (Array.isArray(routing.rules) ? structuredClone(routing.rules) : []) as Rule[],
+    balancers: (Array.isArray(routing.balancers) ? structuredClone(routing.balancers) : []) as Balancer[],
+    domainStrategy: DOMAIN_STRATEGIES.includes(routing.domainStrategy) ? (routing.domainStrategy as string) : 'AsIs',
+  }
+}
+
+function pruneEmptyLists(balancers: Balancer[]): Balancer[] {
+  return balancers.map((balancer) => {
+    const strategy = balancer.strategy ?? {}
+    if (!strategy.settings || typeof strategy.settings !== 'object') return balancer
+    const settings = { ...strategy.settings }
+    for (const [key, value] of Object.entries(settings)) {
+      if (value === undefined || (Array.isArray(value) && value.length === 0)) delete settings[key]
+    }
+    const nextStrategy = { ...strategy, settings }
+    if (Object.keys(settings).length === 0) delete nextStrategy.settings
+    return { ...balancer, strategy: nextStrategy }
+  })
 }
 
 function getBadges(value: any): string[] {
@@ -114,7 +181,11 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
   const { serviceStatus, currentCore } = useCoreRuntimeState()
   const autoApply = useSettings((s) => s.autoApply)
   const getActiveContent = () => configs[activeConfigIndex]?.content ?? editorRef.current?.getValue() ?? ''
-  const [rules, setRules] = useState<Rule[]>(() => parseRules(getActiveContent()))
+  const [routing] = useState(() => parseRouting(getActiveContent()))
+  const [rules, setRules] = useState<Rule[]>(routing.rules)
+  const [balancers, setBalancers] = useState<Balancer[]>(routing.balancers)
+  const [domainStrategy, setDomainStrategy] = useState(routing.domainStrategy)
+  const [tab, setTab] = useState('rules')
   const [available, setAvailable] = useState<AvailableTags>(() => readAvailable(configs))
   const configsRef = useRef(configs)
   const activeConfigIndexRef = useRef(activeConfigIndex)
@@ -122,11 +193,34 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
   const serviceStatusRef = useRef(serviceStatus)
   const currentCoreRef = useRef(currentCore)
   const rulesRef = useRef<Rule[]>(rules)
+  const balancersRef = useRef<Balancer[]>(balancers)
+  const balancerCardRefs = useRef<(HTMLDivElement | null)[]>([])
   const cardRefs = useRef<(HTMLDivElement | null)[]>([])
   const cardRefHandlersRef = useRef<Record<number, (el: HTMLDivElement | null) => void>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
+  const balancersScrollRef = useRef<HTMLDivElement>(null)
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingPatchRef = useRef<Record<string, unknown>>({})
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
+  const [editing, setEditing] = useState<{ kind: 'rules' | 'balancers'; index: number; key: number } | null>(null)
+  const [editContent, setEditContent] = useState('')
+  const [editOriginal, setEditOriginal] = useState('')
+  const [editError, setEditError] = useState<string | undefined>(undefined)
+  const editEditorRef = useRef<ProviderEditorHandle>(null)
+
+  const isDraftDirty = editing != null && editContent !== editOriginal
+  const draftSaveDisabled = !isDraftDirty || !!editError
+  const draftFormatDisabled = !!editError
+  const editTitle = useMemo(() => {
+    if (!editing) return ''
+    const item = (editing.kind === 'rules' ? rulesRef.current : balancersRef.current)[editing.index]
+    if (item) {
+      const tag = editing.kind === 'rules' ? item.ruleTag : item.tag
+      if (typeof tag === 'string' && tag) return tag
+    }
+    return `#${(editing?.index ?? 0) + 1}`
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing])
 
   const getCardRef = useCallback((index: number) => {
     if (!cardRefHandlersRef.current[index]) {
@@ -138,10 +232,12 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
   }, [])
 
   useEffect(() => {
-    const content = getActiveContent()
-    const parsed = parseRules(content)
-    rulesRef.current = parsed
-    setRules(parsed)
+    const parsed = parseRouting(getActiveContent())
+    rulesRef.current = parsed.rules
+    setRules(parsed.rules)
+    balancersRef.current = parsed.balancers
+    setBalancers(parsed.balancers)
+    setDomainStrategy(parsed.domainStrategy)
     setAvailable(readAvailable(configsRef.current))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConfigIndex])
@@ -162,12 +258,12 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
   }, [serviceStatus, currentCore])
 
   const syncToEditor = useCallback(
-    async (newRules: Rule[], triggerSoftRestart = false) => {
+    async (patch: Record<string, unknown>, triggerSoftRestart = false) => {
       const wrapper = editorRef.current
       if (!wrapper) return
       try {
         const json = parseJsonc(wrapper.getValue())
-        json.routing.rules = newRules
+        json.routing = { ...json.routing, ...patch }
         const text = JSON.stringify(json, null, 2)
         wrapper.replaceAll(text)
 
@@ -205,40 +301,128 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
     [editorRef, showToast, dispatch]
   )
 
-  const applyRules = useCallback(
-    (newRules: Rule[], triggerSoftRestart = false) => {
-      rulesRef.current = newRules
-      setRules(newRules)
+  const applyRouting = useCallback(
+    (patch: Record<string, unknown>, triggerSoftRestart = false) => {
+      Object.assign(pendingPatchRef.current, patch)
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
-      syncTimerRef.current = setTimeout(() => syncToEditor(newRules, triggerSoftRestart), 100)
+      syncTimerRef.current = setTimeout(() => {
+        const pending = pendingPatchRef.current
+        pendingPatchRef.current = {}
+        syncToEditor(pending, triggerSoftRestart)
+      }, 100)
     },
     [syncToEditor]
   )
 
+  const applyRules = useCallback(
+    (newRules: Rule[], triggerSoftRestart = false) => {
+      rulesRef.current = newRules
+      setRules(newRules)
+      applyRouting({ rules: newRules }, triggerSoftRestart)
+    },
+    [applyRouting]
+  )
+
+  const updateBalancers = (next: Balancer[]) => {
+    const pruned = next.length ? pruneEmptyLists(next) : next
+    balancersRef.current = pruned
+    setBalancers(pruned)
+    applyRouting({ balancers: pruned.length ? pruned : undefined })
+  }
+
+  const changeDomainStrategy = (value: string) => {
+    setDomainStrategy(value)
+    applyRouting({ domainStrategy: value })
+  }
+
+  const addBalancer = useCallback(() => {
+    updateBalancers([
+      ...balancersRef.current,
+      { tag: `balancer-${balancersRef.current.length + 1}`, selector: [], strategy: { type: 'random' } },
+    ])
+    setTimeout(
+      () =>
+        balancersScrollRef.current?.scrollTo({
+          top: balancersScrollRef.current.scrollHeight,
+          behavior: 'smooth',
+        }),
+      50
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const openEdit = useCallback((kind: 'rules' | 'balancers', index: number) => {
+    const item = (kind === 'rules' ? rulesRef.current : balancersRef.current)[index]
+    if (!item) return
+    const original = JSON.stringify(item, null, 2)
+    setEditContent(original)
+    setEditOriginal(original)
+    setEditError(undefined)
+    setEditing({ kind, index, key: Date.now() })
+  }, [])
+
+  const editRuleJson = useCallback((index: number) => openEdit('rules', index), [openEdit])
+  const editBalancerJson = useCallback((index: number) => openEdit('balancers', index), [openEdit])
+
+  const saveEdit = useCallback(() => {
+    if (editing == null || editContent === editOriginal || editError) return
+    let parsed: Rule
+    try {
+      parsed = JSON.parse(editContent)
+    } catch {
+      setEditError('Синтаксическая ошибка JSON')
+      return
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      setEditError(editing.kind === 'rules' ? 'Правило должно быть JSON-объектом' : 'Балансер должен быть JSON-объектом')
+      return
+    }
+    if (editing.kind === 'rules') {
+      applyRules(rulesRef.current.map((item, position) => (position === editing.index ? parsed : item)))
+      showToast('Правило обновлено')
+    } else {
+      updateBalancers(balancersRef.current.map((item, position) => (position === editing.index ? parsed : item)))
+      showToast('Балансер обновлён')
+    }
+    setEditing(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, editContent, editOriginal, editError, applyRules, showToast])
+
   const startDrag = useCallback(
-    (e: React.MouseEvent | React.TouchEvent, fromIndex: number) => {
+    (e: React.MouseEvent | React.TouchEvent, fromIndex: number, kind: 'rules' | 'balancers' = 'rules') => {
+      const { itemsRef, setItems, refs } =
+        kind === 'rules'
+          ? { itemsRef: rulesRef, setItems: setRules, refs: cardRefs }
+          : { itemsRef: balancersRef, setItems: setBalancers, refs: balancerCardRefs }
       if (e.cancelable) e.preventDefault()
       let current = fromIndex
       setDraggingIndex(fromIndex)
 
       const onMove = (ev: MouseEvent | TouchEvent) => {
         const clientY = 'touches' in ev ? ev.touches[0].clientY : ev.clientY
-        for (let i = 0; i < cardRefs.current.length; i++) {
+        for (let i = 0; i < refs.current.length; i++) {
           if (i === current) continue
-          const rect = cardRefs.current[i]?.getBoundingClientRect()
+          const rect = refs.current[i]?.getBoundingClientRect()
           if (!rect || clientY < rect.top || clientY > rect.bottom) continue
-          const newRules = [...rulesRef.current]
-          const [moved] = newRules.splice(current, 1)
-          newRules.splice(i, 0, moved)
+          const newItems = [...itemsRef.current]
+          const [moved] = newItems.splice(current, 1)
+          newItems.splice(i, 0, moved)
           current = i
-          rulesRef.current = newRules
-          setRules(newRules)
+          itemsRef.current = newItems
+          setItems(newItems)
           setDraggingIndex(i)
           break
         }
       }
       const onUp = () => {
-        syncToEditor(rulesRef.current)
+        if (kind === 'balancers') {
+          const pruned = pruneEmptyLists(itemsRef.current)
+          itemsRef.current = pruned
+          setItems(pruned)
+          syncToEditor({ [kind]: pruned })
+        } else {
+          syncToEditor({ [kind]: itemsRef.current })
+        }
         setDraggingIndex(null)
         document.removeEventListener('mousemove', onMove)
         document.removeEventListener('mouseup', onUp)
@@ -278,40 +462,198 @@ export function GuiRouting({ editorRef, configs, activeConfigIndex }: Props) {
   )
 
   return (
-    <div ref={scrollRef} className="absolute inset-4 flex scrollbar-thin flex-col gap-2 overflow-y-auto pb-1">
-      <div className="flex flex-col gap-2">
-        {rules.map((rule, index) => (
-          <RuleCard
-            key={index}
-            ref={getCardRef(index)}
-            rule={rule}
-            index={index}
-            isDragging={draggingIndex === index}
-            available={available}
-            onUpdate={handleUpdateRule}
-            onDelete={handleDeleteRule}
-            onDragStart={handleDragStart}
-            showToast={showToast}
-          />
-        ))}
+    <Tabs value={tab} onValueChange={setTab} className="absolute inset-4 flex-col">
+      <div className="flex shrink-0 items-center gap-2">
+        <TabsList>
+          <TabsTrigger value="rules" className="dark:data-[state=active]:bg-input-background! data-[state=active]:bg-white!">
+            Роутинг
+          </TabsTrigger>
+          <TabsTrigger value="balancers" className="dark:data-[state=active]:bg-input-background! data-[state=active]:bg-white!">
+            Балансеры
+          </TabsTrigger>
+        </TabsList>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-muted-foreground hidden text-xs sm:inline">domainStrategy</span>
+          <Select value={domainStrategy} onValueChange={changeDomainStrategy}>
+            <SelectTrigger className="min-w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectGroup>
+                {DOMAIN_STRATEGIES.map((strategy) => (
+                  <SelectItem key={strategy} value={strategy}>
+                    {strategy}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
-      <button
-        onClick={() => {
-          applyRules([...rulesRef.current, { domain: [], outboundTag: available.outbounds[0] ?? 'direct' }])
-          setTimeout(
-            () =>
-              scrollRef.current?.scrollTo({
-                top: scrollRef.current.scrollHeight,
-                behavior: 'smooth',
-              }),
-            50
-          )
+      <TabsContent ref={scrollRef} value="rules" className="flex min-h-0 scrollbar-thin flex-col gap-2 overflow-y-auto pb-1">
+        <div className="flex flex-col gap-2">
+          {rules.map((rule, index) => (
+            <RuleCard
+              key={index}
+              ref={getCardRef(index)}
+              rule={rule}
+              index={index}
+              isDragging={draggingIndex === index}
+              available={available}
+              onUpdate={handleUpdateRule}
+              onDelete={handleDeleteRule}
+              onEditJson={editRuleJson}
+              onDragStart={handleDragStart}
+              showToast={showToast}
+            />
+          ))}
+        </div>
+        <button
+          onClick={() => {
+            applyRules([...rulesRef.current, { domain: [], outboundTag: available.outbounds[0] ?? 'direct' }])
+            setTimeout(
+              () =>
+                scrollRef.current?.scrollTo({
+                  top: scrollRef.current.scrollHeight,
+                  behavior: 'smooth',
+                }),
+              50
+            )
+          }}
+          className={ADD_BUTTON_CLASS}
+        >
+          <IconPlus size={17} /> Добавить правило
+        </button>
+      </TabsContent>
+      <TabsContent ref={balancersScrollRef} value="balancers" className="flex min-h-0 scrollbar-thin flex-col gap-2 overflow-y-auto pb-1">
+        {balancers.length === 0 ? (
+          <Empty className="flex-1">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <IconArrowsShuffle />
+              </EmptyMedia>
+              <EmptyTitle>Балансеры не найдены</EmptyTitle>
+              <EmptyDescription>Добавьте балансер, чтобы распределять трафик между несколькими подключениями</EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button variant="outline" onClick={() => addBalancer()}>
+                <IconPlus data-icon="inline-start" /> Добавить
+              </Button>
+            </EmptyContent>
+          </Empty>
+        ) : (
+          <>
+            {balancers.map((balancer, index) => (
+              <BalancerCard
+                key={index}
+                ref={(element) => {
+                  balancerCardRefs.current[index] = element
+                }}
+                balancer={balancer}
+                index={index}
+                isDragging={draggingIndex === index}
+                available={available}
+                onDragStart={(event) => startDrag(event, index, 'balancers')}
+                onChange={(updated) => updateBalancers(balancers.map((item, position) => (position === index ? updated : item)))}
+                onDelete={() => updateBalancers(balancers.filter((_, position) => position !== index))}
+                onEditJson={editBalancerJson}
+              />
+            ))}
+            <button onClick={() => addBalancer()} className={ADD_BUTTON_CLASS}>
+              <IconPlus size={17} /> Добавить балансер
+            </button>
+          </>
+        )}
+      </TabsContent>
+
+      {/* Модалка редактирования JSON правила/ балансера */}
+      <Dialog
+        open={editing != null}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null)
         }}
-        className="text-muted-foreground border-ring/60 hover:border-chart-2 mt-1 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border-2 border-dashed px-3 py-2.5 text-sm font-medium transition-colors hover:border-solid hover:text-[#60a5fa]"
       >
-        <IconPlus size={17} /> Добавить правило
-      </button>
-    </div>
+        <DialogContent className="w-full max-w-[95vw]! md:w-[min(80vw,700px)]">
+          <div className="flex h-[54dvh] flex-col gap-4 overflow-hidden md:h-[50dvh]">
+            <DialogHeader className="shrink-0">
+              <DialogTitle className="flex items-center gap-2">
+                <IconCodeDots size={24} className="text-chart-2" />
+                {editTitle}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="border-border bg-input-background relative min-h-0 flex-1 overflow-hidden rounded-xl border">
+              {editing != null && (
+                <>
+                  <ProviderEditor
+                    ref={editEditorRef}
+                    key={editing.key}
+                    content={editContent}
+                    language="json"
+                    lineWrap={false}
+                    onChange={setEditContent}
+                    onSave={() => saveEdit()}
+                    onValidationChange={setEditError}
+                  />
+                  <span className="absolute right-3 bottom-3 z-10 flex items-center gap-1.5">
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <span>
+                            <Button
+                              size="icon-lg"
+                              variant="ghost"
+                              className="border-border/60 bg-background/40 hover:bg-background/70 rounded-lg backdrop-blur-md"
+                              onClick={() => void editEditorRef.current?.format()}
+                              disabled={draftFormatDisabled}
+                            >
+                              <IconCode className="size-5" />
+                            </Button>
+                          </span>
+                        }
+                      />
+                      <TooltipContent side="top">
+                        Форматировать JSON <Kbd>Shift+Alt+F</Kbd>
+                      </TooltipContent>
+                    </Tooltip>
+                    {draftSaveDisabled ? (
+                      <Button
+                        size="icon-lg"
+                        variant="ghost"
+                        className="border-border/60 bg-background/40 hover:bg-background/70 rounded-lg backdrop-blur-md"
+                        onClick={() => saveEdit()}
+                        disabled
+                      >
+                        <IconDeviceFloppy className="size-5" />
+                      </Button>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span>
+                              <Button
+                                size="icon-lg"
+                                variant="ghost"
+                                className="border-border/60 bg-background/40 hover:bg-background/70 rounded-lg backdrop-blur-md"
+                                onClick={() => saveEdit()}
+                              >
+                                <IconDeviceFloppy className="size-5" />
+                              </Button>
+                            </span>
+                          }
+                        />
+                        <TooltipContent side="top" className="whitespace-nowrap">
+                          Сохранить изменения <Kbd>Ctrl+S</Kbd>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </Tabs>
   )
 }
 
@@ -322,30 +664,27 @@ interface RuleCardProps {
   available: AvailableTags
   onUpdate: (index: number, r: Rule, triggerSoftRestart?: boolean) => void
   onDelete: (index: number) => void
+  onEditJson: (index: number) => void
   onDragStart: (e: React.MouseEvent | React.TouchEvent, index: number) => void
   showToast: (msg: string, type?: 'success' | 'error') => void
 }
 
 const RuleCard = memo(
   forwardRef<HTMLDivElement, RuleCardProps>(function RuleCard(
-    { rule, index, isDragging, available, onUpdate, onDelete, onDragStart, showToast },
+    { rule, index, isDragging, available, onUpdate, onDelete, onEditJson, onDragStart, showToast },
     ref
   ) {
-    const [editingName, setEditingName] = useState(false)
-    const [nameValue, setNameValue] = useState(rule.ruleTag ?? '')
-
     const isBalancer = 'balancerTag' in rule
     const outboundType = isBalancer ? 'balancerTag' : 'outboundTag'
     const outboundValue = rule[outboundType] ?? ''
     const conditionFields = Object.keys(rule).filter((k) => k in RULE_FIELDS)
     const availableToAdd = (Object.keys(RULE_FIELDS) as FieldName[]).filter((f) => !(f in rule))
+    const [confirmOpen, setConfirmOpen] = useState(false)
 
-    function saveName() {
-      const trimmed = nameValue.trim()
+    function saveName(name: string) {
       const updated = { ...rule }
-      if (trimmed) updated.ruleTag = trimmed
+      if (name) updated.ruleTag = name
       else delete updated.ruleTag
-      setEditingName(false)
       onUpdate(index, updated)
     }
 
@@ -448,53 +787,13 @@ const RuleCard = memo(
           >
             <IconGripVertical size={16} />
           </div>
-          <Badge variant="outline" className="mr-1 size-7 rounded-full border-blue-500/20 bg-blue-500/10 text-blue-400">
-            #{index + 1}
-          </Badge>
-          {editingName ? (
-            <div className="flex min-w-0 flex-1 items-center gap-1">
-              <input
-                value={nameValue}
-                onChange={(e) => setNameValue(e.target.value)}
-                onBlur={saveName}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') saveName()
-                  if (e.key === 'Escape') {
-                    setEditingName(false)
-                    setNameValue(rule.ruleTag ?? '')
-                  }
-                }}
-                autoFocus
-                className="border-border h-6 min-w-0 flex-1 border-b bg-transparent text-xs outline-none"
-                placeholder="Название правила"
-              />
-              <button onClick={saveName} className="text-muted-foreground hover:text-foreground shrink-0">
-                <IconCheck size={14} />
-              </button>
-            </div>
-          ) : (
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              {rule.ruleTag && <span className="truncate text-sm">{rule.ruleTag}</span>}
-              <TooltipProvider delayDuration={300}>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        onClick={() => {
-                          setEditingName(true)
-                          setNameValue(rule.ruleTag ?? '')
-                        }}
-                        className="text-muted-foreground/40 hover:text-muted-foreground shrink-0 transition-colors"
-                      >
-                        <IconPencil size={16} />
-                      </button>
-                    }
-                  />
-                  <TooltipContent>Редактировать название</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-          )}
+          <IndexBadge index={index} />
+          <EditableTitle
+            value={rule.ruleTag ?? ''}
+            placeholder="Название правила"
+            tooltip="Редактировать название (ruleTag)"
+            onSave={saveName}
+          />
           {availableToAdd.length > 0 && (
             <Select
               value=""
@@ -523,14 +822,58 @@ const RuleCard = memo(
               </SelectContent>
             </Select>
           )}
-          <Button
-            onClick={() => onDelete(index)}
-            variant="outline"
-            size="icon-sm"
-            className="hover:text-destructive hover:bg-destructive/20 shrink-0 rounded-md p-1 transition-colors"
-          >
-            <IconTrash size={16} className="cursor-pointer" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button variant="outline" size="icon-sm" onClick={() => onEditJson(index)} aria-label="Редактировать JSON">
+                  <IconCodeDots className="size-4.5" />
+                </Button>
+              }
+            />
+            <TooltipContent>Редактировать JSON</TooltipContent>
+          </Tooltip>
+          <Popover open={confirmOpen} onOpenChange={setConfirmOpen}>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <PopoverTrigger
+                    render={
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        aria-label="Удалить правило"
+                        disabled={isDragging}
+                        className="rounded-md p-1 transition-colors hover:text-red-400"
+                      />
+                    }
+                  >
+                    <IconTrash size={16} />
+                  </PopoverTrigger>
+                }
+              />
+              <TooltipContent>Удалить правило</TooltipContent>
+            </Tooltip>
+            <PopoverContent align="end" sideOffset={6} className="max-w-72">
+              <PopoverHeader>
+                <PopoverTitle>Удалить правило «{rule.ruleTag || `#${index + 1}`}» из конфига?</PopoverTitle>
+              </PopoverHeader>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="outline" onClick={() => setConfirmOpen(false)}>
+                  Нет
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => {
+                    setConfirmOpen(false)
+                    onDelete(index)
+                  }}
+                >
+                  Да
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Condition fields */}
@@ -611,7 +954,7 @@ const RuleCard = memo(
                       }}
                       className="text-muted-foreground/40 hover:text-destructive ml-auto shrink-0 p-1 transition-colors"
                     >
-                      <IconX size={14} />
+                      <ClearIcon size={14} />
                     </button>
                   </div>
                 ) : (
@@ -683,6 +1026,7 @@ const RuleCard = memo(
     prev.index === next.index &&
     prev.isDragging === next.isDragging &&
     prev.available === next.available &&
+    prev.onEditJson === next.onEditJson &&
     prev.showToast === next.showToast
 )
 RuleCard.displayName = 'RuleCard'
@@ -730,17 +1074,19 @@ function BadgeInput({ badges, placeholder, fieldType, onAdd, onRemove, onRemoveF
   }
 
   const color =
-    fieldType === 'domain'
-      ? 'text-red-400 bg-red-400/15 border-none rounded-sm'
-      : fieldType === 'ip'
-        ? 'text-blue-400 bg-blue-400/15 border-none rounded-sm'
-        : fieldType === 'sourceIP'
-          ? 'text-purple-400 bg-purple-400/15 border-none rounded-sm'
-          : 'text-yellow-400 bg-yellow-400/15 border-none rounded-sm'
+    fieldType === 'selector'
+      ? 'text-teal-400 bg-teal-400/15 border-none rounded-sm'
+      : fieldType === 'domain'
+        ? 'text-red-400 bg-red-400/15 border-none rounded-sm'
+        : fieldType === 'ip'
+          ? 'text-blue-400 bg-blue-400/15 border-none rounded-sm'
+          : fieldType === 'sourceIP'
+            ? 'text-purple-400 bg-purple-400/15 border-none rounded-sm'
+            : 'text-yellow-400 bg-yellow-400/15 border-none rounded-sm'
 
   return (
     <div
-      className="border-border bg-input-background relative flex min-h-9 cursor-text flex-wrap items-center gap-1 rounded-md border px-1 py-1 pr-7"
+      className="border-border bg-input-background relative flex min-h-9 cursor-text flex-wrap items-center gap-1 rounded-md border px-1 py-1 pr-7 transition-colors focus-within:border-[#60a5fa]"
       onClick={() => {
         if (editingIndex === null) inputRef.current?.focus()
       }}
@@ -790,7 +1136,7 @@ function BadgeInput({ badges, placeholder, fieldType, onAdd, onRemove, onRemoveF
               onClick={(e) => e.stopPropagation()}
               className="ml-1 text-sm leading-none opacity-50 transition-opacity hover:opacity-100"
             >
-              <IconX size={12} />
+              <ClearIcon size={12} />
             </button>
           </span>
         )
@@ -825,8 +1171,434 @@ function BadgeInput({ badges, placeholder, fieldType, onAdd, onRemove, onRemoveF
         onClick={(e) => e.stopPropagation()}
         className="text-muted-foreground/40 hover:text-destructive absolute top-1.5 right-1 p-1 transition-colors"
       >
-        <IconX size={14} />
+        <ClearIcon size={14} />
       </button>
     </div>
   )
 }
+
+const NO_FALLBACK = '__none__'
+
+function listHandlers(list: string[], update: (next: string[]) => void) {
+  return {
+    badges: list,
+    onAdd: (value: string) => {
+      if (!list.includes(value)) update([...list, value])
+    },
+    onRemove: (value: string) => update(list.filter((item) => item !== value)),
+    onEdit: (oldValue: string, newValue: string) => update(list.map((item) => (item === oldValue ? newValue : item)).filter(Boolean)),
+    onRemoveField: () => update([]),
+  }
+}
+
+function InfoIcon({ text, ariaLabel, className }: { text: string; ariaLabel?: string; className?: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip open={open} onOpenChange={setOpen}>
+        <TooltipTrigger
+          render={<span className={cn('text-muted-foreground inline-flex cursor-help', className)} />}
+          aria-label={ariaLabel ?? `Подробнее: ${text}`}
+          onClick={() => setOpen((prev) => !prev)}
+        >
+          <IconInfoCircle className="size-3.5" />
+        </TooltipTrigger>
+        <TooltipContent
+          side="right"
+          sideOffset={8}
+          className="max-w-xs whitespace-pre-line"
+          onClick={() => {
+            if (typeof window !== 'undefined' && window.innerWidth < 768) setOpen(false)
+          }}
+        >
+          {text}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
+function FieldRow({ label, tooltip, children }: { label: string; tooltip?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="border-border text-muted-foreground flex h-9 w-30 shrink-0 items-center rounded-md border px-3 text-sm font-medium">
+        {label}
+        {tooltip && <InfoIcon text={tooltip} ariaLabel={`Подробнее: ${label}`} className="ml-auto" />}
+      </span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  )
+}
+
+function EditableTitle({
+  value,
+  placeholder,
+  tooltip = 'Редактировать название',
+  onSave,
+}: {
+  value: string
+  placeholder: string
+  tooltip?: string
+  onSave: (value: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+
+  function save() {
+    setEditing(false)
+    onSave(draft.trim())
+  }
+
+  if (editing)
+    return (
+      <div className="flex min-w-0 flex-1 items-center gap-1">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') {
+              setEditing(false)
+              setDraft(value)
+            }
+          }}
+          autoFocus
+          className="border-border h-6 min-w-0 flex-1 border-b bg-transparent text-xs outline-none"
+          placeholder={placeholder}
+        />
+        <button onClick={save} className="text-muted-foreground hover:text-foreground shrink-0">
+          <IconCheck size={14} />
+        </button>
+      </div>
+    )
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2">
+      {value && <span className="truncate text-sm">{value}</span>}
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                onClick={() => {
+                  setDraft(value)
+                  setEditing(true)
+                }}
+                className="text-muted-foreground/40 hover:text-muted-foreground shrink-0 transition-colors"
+              >
+                <IconPencil size={16} />
+              </button>
+            }
+          />
+          <TooltipContent>{tooltip}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </div>
+  )
+}
+
+interface BalancerCardProps {
+  balancer: Balancer
+  index: number
+  isDragging: boolean
+  available: AvailableTags
+  onChange: (balancer: Balancer) => void
+  onDelete: () => void
+  onEditJson: (index: number) => void
+  onDragStart: (event: React.MouseEvent | React.TouchEvent) => void
+}
+
+const BalancerCard = forwardRef<HTMLDivElement, BalancerCardProps>(function BalancerCard(
+  { balancer, index, isDragging, available, onChange, onDelete, onEditJson, onDragStart },
+  ref
+) {
+  const strategyType: string = balancer.strategy?.type ?? 'random'
+  const settings: Record<string, any> = balancer.strategy?.settings ?? {}
+  const costs: Record<string, any>[] = settings.costs ?? []
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  function patch(changes: Balancer) {
+    onChange({ ...balancer, ...changes })
+  }
+
+  function patchSettings(changes: Record<string, unknown>) {
+    patch({ strategy: { ...balancer.strategy, type: strategyType, settings: { ...settings, ...changes } } })
+  }
+
+  function patchCost(position: number, changes: Record<string, unknown>) {
+    patchSettings({ costs: costs.map((cost, costIndex) => (costIndex === position ? { ...cost, ...changes } : cost)) })
+  }
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        'bg-input-background flex flex-col gap-2 rounded-xl border p-3 transition-all duration-150 select-none',
+        isDragging ? 'scale-[0.99] border-[#60a5fa] opacity-80' : 'border-border'
+      )}
+    >
+      <div className="flex items-center gap-1">
+        <div
+          className={cn(
+            'text-muted-foreground hover:text-foreground hover:bg-muted/50 touch-none rounded p-1 transition-colors',
+            isDragging ? 'cursor-grabbing' : 'cursor-grab'
+          )}
+          onMouseDown={onDragStart}
+          onTouchStart={onDragStart}
+        >
+          <IconGripVertical size={16} />
+        </div>
+        <IndexBadge index={index} />
+        <EditableTitle
+          value={balancer.tag ?? ''}
+          placeholder="Тег балансера"
+          tooltip="Редактировать название (tag)"
+          onSave={(tag) => tag && patch({ tag })}
+        />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button variant="outline" size="icon-sm" onClick={() => onEditJson(index)} aria-label="Редактировать JSON">
+                <IconCodeDots className="size-4.5" />
+              </Button>
+            }
+          />
+          <TooltipContent>Редактировать JSON</TooltipContent>
+        </Tooltip>
+        <Popover open={confirmOpen} onOpenChange={setConfirmOpen}>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <PopoverTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label="Удалить балансер"
+                      disabled={isDragging}
+                      className="rounded-md p-1 transition-colors hover:text-red-400"
+                    />
+                  }
+                >
+                  <IconTrash size={16} />
+                </PopoverTrigger>
+              }
+            />
+            <TooltipContent>Удалить балансер</TooltipContent>
+          </Tooltip>
+          <PopoverContent align="end" sideOffset={6} className="max-w-72">
+            <PopoverHeader>
+              <PopoverTitle>Удалить балансер «{balancer.tag || `#${index + 1}`}» из конфига?</PopoverTitle>
+            </PopoverHeader>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => setConfirmOpen(false)}>
+                Нет
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  setConfirmOpen(false)
+                  onDelete()
+                }}
+              >
+                Да
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+
+      <FieldRow label="selector" tooltip={BALANCER_INFO.selector}>
+        <BadgeInput
+          {...listHandlers(balancer.selector ?? [], (selector) => patch({ selector }))}
+          placeholder="proxy-, vless-"
+          fieldType="selector"
+        />
+      </FieldRow>
+
+      <FieldRow label="strategy" tooltip={BALANCER_INFO.strategy}>
+        <Select value={strategyType} onValueChange={(type) => patch({ strategy: { type } })}>
+          <SelectTrigger popper className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper">
+            <SelectGroup>
+              {BALANCER_STRATEGIES.map((strategy) => (
+                <SelectItem key={strategy} value={strategy}>
+                  {strategy}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </FieldRow>
+
+      {strategyType === 'leastLoad' && (
+        <>
+          {LEAST_LOAD_FIELDS.map(({ key, type, placeholder, info }) => (
+            <FieldRow key={key} label={key} tooltip={info}>
+              <InputGroup>
+                <InputGroupInput
+                  key={String(settings[key] ?? '')}
+                  type={type}
+                  step="any"
+                  defaultValue={String(settings[key] ?? '')}
+                  placeholder={placeholder}
+                  className={cn(NO_SPINNERS_CLASS, 'pr-7')}
+                  onBlur={(event) => {
+                    const next = event.target.value
+                    if (next !== String(settings[key] ?? '')) {
+                      patchSettings({ [key]: next === '' ? undefined : type === 'number' ? Number(next) : next })
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur()
+                  }}
+                />
+                <button
+                  onClick={() => patchSettings({ [key]: undefined })}
+                  className="text-muted-foreground/40 hover:text-destructive absolute top-1.5 right-1 cursor-pointer p-1 transition-colors"
+                  aria-label={`Удалить ${key}`}
+                >
+                  <ClearIcon size={14} />
+                </button>
+              </InputGroup>
+            </FieldRow>
+          ))}
+
+          <FieldRow label="baselines" tooltip={BALANCER_INFO.baselines}>
+            <BadgeInput
+              {...listHandlers(settings.baselines ?? [], (baselines) => patchSettings({ baselines }))}
+              placeholder="1s, 2s"
+              fieldType="baselines"
+            />
+          </FieldRow>
+
+          <FieldRow label="costs" tooltip={BALANCER_INFO.costs}>
+            <div className="flex flex-col gap-1">
+              {costs.map((cost, position) => (
+                <div key={position} className="flex flex-col gap-1 sm:flex-row sm:items-center">
+                  <InputGroup className="min-w-0 flex-1">
+                    <InputGroupAddon align="inline-start">
+                      <InputGroupText>match</InputGroupText>
+                    </InputGroupAddon>
+                    <InputGroupInput
+                      key={cost.match ?? ''}
+                      defaultValue={cost.match ?? ''}
+                      placeholder="tag"
+                      onBlur={(event) => {
+                        const next = event.target.value.trim()
+                        if (next !== (cost.match ?? '')) patchCost(position, { match: next })
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                      }}
+                    />
+                    <InputGroupAddon align="inline-end" className="cursor-default!">
+                      <TooltipProvider delayDuration={300}>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <InputGroupButton
+                                onClick={() => patchCost(position, { regexp: !cost.regexp })}
+                                className={cn(
+                                  'h-7 cursor-pointer rounded-[calc(var(--radius)-5px)] px-2 text-xs font-medium transition-colors',
+                                  cost.regexp ? 'bg-yellow-400/15 text-yellow-400' : 'text-yellow-400/25 hover:bg-yellow-400/15'
+                                )}
+                              />
+                            }
+                            aria-label="regexp"
+                          >
+                            regexp
+                          </TooltipTrigger>
+                          <TooltipContent side="top" sideOffset={8}>
+                            {BALANCER_INFO.regexp}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </InputGroupAddon>
+                  </InputGroup>
+                  <div className="flex items-center gap-1">
+                    <InputGroup className="min-w-0 flex-1 sm:w-28 sm:flex-none">
+                      <InputGroupAddon align="inline-start">
+                        <InputGroupText>value</InputGroupText>
+                      </InputGroupAddon>
+                      <InputGroupInput
+                        type="number"
+                        step="any"
+                        key={String(cost.value ?? '')}
+                        defaultValue={String(cost.value ?? '')}
+                        placeholder="0.5"
+                        className={NO_SPINNERS_CLASS}
+                        onBlur={(event) => {
+                          const next = event.target.value
+                          if (next !== String(cost.value ?? '')) patchCost(position, { value: Number(next) })
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.currentTarget.blur()
+                        }}
+                      />
+                    </InputGroup>
+                    <button
+                      onClick={() => patchSettings({ costs: costs.filter((_, costIndex) => costIndex !== position) })}
+                      className="text-muted-foreground/40 hover:text-destructive shrink-0 p-1 transition-colors"
+                    >
+                      <ClearIcon size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <button
+                onClick={() => patchSettings({ costs: [...costs, { regexp: false, match: '', value: 0.5 }] })}
+                className="text-muted-foreground hover:text-foreground border-border flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-md border border-dashed text-xs transition-colors"
+              >
+                <IconPlus size={13} /> Добавить вес
+              </button>
+            </div>
+          </FieldRow>
+        </>
+      )}
+
+      <div className="flex items-center gap-2">
+        <span className="bg-input-background flex h-9 min-w-34 shrink-0 items-center rounded-md border border-blue-500/40 px-2.5 text-sm font-bold text-blue-400 shadow-xs">
+          fallbackTag
+          <InfoIcon text={BALANCER_INFO.fallbackTag} ariaLabel="Подробнее: fallbackTag" className="ml-auto text-blue-400/40" />
+        </span>
+        <Select
+          value={balancer.fallbackTag ?? NO_FALLBACK}
+          items={{ [NO_FALLBACK]: 'Без фолбека', ...Object.fromEntries(available.outbounds.map((tag) => [tag, tag])) }}
+          onValueChange={(fallbackTag) => patch({ fallbackTag: fallbackTag === NO_FALLBACK ? undefined : fallbackTag })}
+        >
+          <SelectTrigger
+            popper
+            className={cn(
+              'min-w-0 flex-1 border-blue-500/40 transition-colors hover:bg-blue-500/10 [&>svg]:text-blue-400/60',
+              !balancer.fallbackTag && 'text-muted-foreground'
+            )}
+          >
+            <SelectValue placeholder="Выберите outbound..." />
+          </SelectTrigger>
+          <SelectContent position="popper" className="border-blue-500/40">
+            <SelectGroup>
+              <SelectItem value={NO_FALLBACK} className="text-muted-foreground">
+                Без фолбека
+              </SelectItem>
+              {available.outbounds.length === 0 ? (
+                <div className="text-muted-foreground px-2 py-1.5 text-xs">Аутбаунды не найдены</div>
+              ) : (
+                available.outbounds.map((tag) => (
+                  <SelectItem key={tag} value={tag}>
+                    {tag}
+                  </SelectItem>
+                ))
+              )}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  )
+})
+BalancerCard.displayName = 'BalancerCard'

@@ -1,5 +1,6 @@
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { ClearIcon } from '@/components/ui/clear-icon'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
@@ -15,15 +16,15 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconSettings,
-  IconX,
   IconArrowBackUp,
   IconCornerDownLeft,
   IconTrash,
 } from '@tabler/icons-react'
 import { Fragment, memo, useCallback, useState } from 'react'
 import { apiCall } from '../../lib/api'
+import { applyEmojiFont } from '../../lib/theme'
 import { useAppContext, useModalContext } from '../../lib/store'
-import type { AppSettings, AutoDnsMode, PingMode, ProxySortOrder, ThemeMode } from '../../lib/types'
+import type { AppSettings, AutoDnsMode, EmojiFont, PingMode, ProxySortOrder, ThemeMode } from '../../lib/types'
 
 type BooleanSettingKey = {
   [K in keyof AppSettings]: AppSettings[K] extends boolean ? K : never
@@ -72,25 +73,32 @@ const guiSettings: ToggleSetting[] = [
 
 const updateSettings: ToggleSetting[] = [
   {
+    id: 'backup',
+    key: 'backupCore',
+    path: 'updater.backup_core',
+    title: 'Бэкап ядра',
+    description: 'Сохранять резервную копию ядра при обновлении',
+  },
+]
+
+type IntervalSetting = Omit<ToggleSetting, 'key'> & { key: 'autoCheckUI' | 'autoCheckCore' }
+
+type IntervalSettingHandler = (item: IntervalSetting, value: number) => void
+
+const checkIntervalSettings: IntervalSetting[] = [
+  {
     id: 'auto-ui',
     key: 'autoCheckUI',
     path: 'updater.auto_check_ui',
     title: 'Автопроверка (панель)',
-    description: 'Фоновая проверка обновлений панели с интервалом в 4 часа',
+    description: 'Интервал проверки обновлений панели в часах (1–24, 0 — выкл)',
   },
   {
     id: 'auto-core',
     key: 'autoCheckCore',
     path: 'updater.auto_check_core',
     title: 'Автопроверка (ядро)',
-    description: 'Фоновая проверка обновлений ядра с интервалом в 4 часа',
-  },
-  {
-    id: 'backup',
-    key: 'backupCore',
-    path: 'updater.backup_core',
-    title: 'Бэкап ядра',
-    description: 'Сохранять резервную копию ядра при обновлении',
+    description: 'Интервал проверки обновлений ядра в часах (1–24, 0 — выкл)',
   },
 ]
 
@@ -132,6 +140,49 @@ const themeOptions: { value: ThemeMode; label: string }[] = [
   { value: 'light', label: 'Светлая' },
   { value: 'dark', label: 'Темная' },
 ]
+
+const emojiFontOptions: { value: EmojiFont; label: string }[] = [
+  { value: 'twemoji', label: 'Twemoji' },
+  { value: 'notocoloremoji', label: 'Noto Color Emoji' },
+]
+
+const IntervalSettingField = memo(function IntervalSettingField({
+  item,
+  value,
+  onChangeInterval,
+}: {
+  item: IntervalSetting
+  value: number
+  onChangeInterval: IntervalSettingHandler
+}) {
+  return (
+    <Field orientation="horizontal" className="px-0 py-3">
+      <FieldContent>
+        <FieldLabel htmlFor={item.id}>{item.title}</FieldLabel>
+        <FieldDescription className="text-[13px]">{item.description}</FieldDescription>
+      </FieldContent>
+      <InputGroup className="w-15">
+        <InputGroupInput id={item.id} readOnly value={value} />
+        <InputGroupAddon align="inline-end" className="flex flex-col gap-0">
+          <InputGroupButton
+            aria-label="Увеличить"
+            className="text-muted-foreground hover:text-foreground h-[calc(50%-0.5px)]! min-h-0! px-1 text-[9px]"
+            onClick={() => onChangeInterval(item, value + 1)}
+          >
+            <IconChevronUp />
+          </InputGroupButton>
+          <InputGroupButton
+            aria-label="Уменьшить"
+            className="text-muted-foreground hover:text-foreground h-[calc(50%-0.5px)]! min-h-0! px-1 text-[9px]"
+            onClick={() => onChangeInterval(item, value - 1)}
+          >
+            <IconChevronDown />
+          </InputGroupButton>
+        </InputGroupAddon>
+      </InputGroup>
+    </Field>
+  )
+})
 
 const SwitchSettingField = memo(function SwitchSettingField({
   item,
@@ -231,7 +282,7 @@ const ProxySettingsField = memo(function ProxySettingsField({
                 className="text-muted-foreground hover:text-destructive hover:bg-transparent!"
                 onClick={() => setNewProxy('')}
               >
-                <IconX />
+                <ClearIcon size={14} />
               </InputGroupButton>
             )}
           </InputGroupAddon>
@@ -686,6 +737,16 @@ export function SettingsModal() {
     [dispatch, saveSetting]
   )
 
+  const setCheckInterval = useCallback(
+    async (item: IntervalSetting, value: number) => {
+      const hours = Math.max(0, Math.min(24, value))
+      if (hours === settings[item.key]) return
+      const ok = await saveSetting(item.path, hours)
+      if (ok) dispatch({ type: 'SET_SETTINGS', settings: { [item.key]: hours } })
+    },
+    [dispatch, saveSetting, settings]
+  )
+
   const setTheme = useCallback(
     (value: string) => {
       dispatch({ type: 'SET_SETTINGS', settings: { theme: value as ThemeMode } })
@@ -699,6 +760,14 @@ export function SettingsModal() {
       if (ok) dispatch({ type: 'SET_SETTINGS', settings: { authEnabled: value } })
     },
     [dispatch, saveSetting]
+  )
+
+  const setEmojiFont = useCallback(
+    (value: string) => {
+      applyEmojiFont(value as EmojiFont)
+      dispatch({ type: 'SET_SETTINGS', settings: { emojiFont: value as EmojiFont } })
+    },
+    [dispatch]
   )
 
   const addProxy = useCallback(
@@ -844,12 +913,39 @@ export function SettingsModal() {
                       items={Object.fromEntries(themeOptions.map((o) => [o.value, o.label]))}
                       onValueChange={setTheme}
                     >
-                      <SelectTrigger id="theme" className="w-34">
+                      <SelectTrigger id="theme" className="w-32">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
                           {themeOptions.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Separator className="my-2" />
+                  <Field orientation="horizontal" className="px-0 py-3">
+                    <FieldContent>
+                      <FieldLabel htmlFor="emoji-font">Шрифт эмоджи</FieldLabel>
+                      <FieldDescription className="text-[13px]">
+                        Используется для отображения флагов и других эмоджи. Шрифты отличные от Twemoji должны быть установлены в системе.
+                      </FieldDescription>
+                    </FieldContent>
+                    <Select
+                      value={settings.emojiFont}
+                      items={Object.fromEntries(emojiFontOptions.map((o) => [o.value, o.label]))}
+                      onValueChange={setEmojiFont}
+                    >
+                      <SelectTrigger id="emoji-font" className="w-42">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {emojiFontOptions.map((item) => (
                             <SelectItem key={item.value} value={item.value}>
                               {item.label}
                             </SelectItem>
@@ -1069,6 +1165,12 @@ export function SettingsModal() {
 
               <TabsContent value="updates">
                 <FieldGroup className="gap-0!">
+                  {checkIntervalSettings.map((item) => (
+                    <Fragment key={item.id}>
+                      <IntervalSettingField item={item} value={settings[item.key]} onChangeInterval={setCheckInterval} />
+                      <Separator className="my-0" />
+                    </Fragment>
+                  ))}
                   {updateSettings.map((item) => (
                     <Fragment key={item.id}>
                       <SwitchSettingField item={item} checked={settings[item.key]} onToggleSetting={toggleSetting} />

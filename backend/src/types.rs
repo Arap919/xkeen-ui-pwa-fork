@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::io::BufReader;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Instant;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, watch};
 use tokio::task::AbortHandle;
 
 pub const APP_CONFIG: &str = "/opt/etc/xkeen/xkeen-ui.json";
@@ -102,7 +103,10 @@ pub struct AppState {
     pub settings: Arc<RwLock<AppSettings>>,
     pub init_file: Arc<RwLock<Option<String>>>,
     pub http_client: reqwest::Client,
+    /// Клиент без общего таймаута запроса — для загрузки файлов обновлений (прогресс отменяется вручную).
+    pub update_client: reqwest::Client,
     pub update_checker: UpdateChecker,
+    pub update_session: UpdateSession,
     pub geo_cache: Arc<RwLock<GeoCache>>,
     pub log_tx: Arc<broadcast::Sender<String>>,
     pub log_watcher: Arc<Mutex<Option<AbortHandle>>>,
@@ -117,10 +121,151 @@ pub struct UpdateChecker {
     pub core_outdated: Arc<RwLock<bool>>,
     pub last_ui_check: Arc<RwLock<Option<Instant>>>,
     pub last_core_check: Arc<RwLock<Option<Instant>>>,
+    pub last_ui_failure: Arc<RwLock<Option<Instant>>>,
+    pub last_core_failure: Arc<RwLock<Option<Instant>>>,
     pub last_ui_toast: Arc<RwLock<Option<Instant>>>,
     pub last_core_toast: Arc<RwLock<Option<Instant>>>,
     pub ui_latest_tag: Arc<RwLock<Option<String>>>,
     pub core_latest_tag: Arc<RwLock<Option<String>>>,
+}
+
+/// Событие процесса обновления с монотонным номером — рассылается по WebSocket
+/// и копится в истории сессии. `seq` позволяет получателям дедуплицировать
+/// события, приходящие и из истории, и из broadcast-потока.
+#[derive(Clone, Serialize)]
+pub struct UpdateEvent {
+    pub seq: u64,
+    #[serde(flatten)]
+    pub data: UpdateEventData,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UpdateEventData {
+    Stage { stage: String },
+    Log { ts: String, level: String, message: String },
+    Progress { downloaded: u64, total: u64, speed: f64 },
+    Done { success: bool, error: Option<String> },
+}
+
+/// Команда управляющих кнопок окна обновления.
+#[derive(Clone, Copy, PartialEq)]
+pub enum UpdateCtl {
+    Run,
+    Cancel,
+    Proxy,
+}
+
+#[derive(Clone)]
+pub struct UpdateSession {
+    pub events: broadcast::Sender<UpdateEvent>,
+    pub history: Arc<RwLock<Vec<UpdateEvent>>>,
+    pub control: Arc<watch::Sender<UpdateCtl>>,
+    pub ctl_rx: watch::Receiver<UpdateCtl>,
+    pub running: Arc<AtomicBool>,
+    seq: Arc<std::sync::Mutex<u64>>,
+}
+
+impl Default for UpdateSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UpdateSession {
+    pub fn new() -> Self {
+        let (events, _) = broadcast::channel(512);
+        let (control, ctl_rx) = watch::channel(UpdateCtl::Run);
+        Self {
+            events,
+            history: Arc::new(RwLock::new(Vec::new())),
+            control: Arc::new(control),
+            ctl_rx,
+            running: Arc::new(AtomicBool::new(false)),
+            seq: Arc::new(std::sync::Mutex::new(0)),
+        }
+    }
+
+    pub fn emit(&self, data: UpdateEventData) {
+        let mut h = self.history.write().unwrap();
+        let seq = {
+            let mut counter = self.seq.lock().unwrap();
+            *counter += 1;
+            *counter
+        };
+        let event = UpdateEvent { seq, data };
+        if matches!(event.data, UpdateEventData::Progress { .. })
+            && matches!(
+                h.last(),
+                Some(UpdateEvent {
+                    data: UpdateEventData::Progress { .. },
+                    ..
+                })
+            )
+        {
+            h.pop();
+        }
+        h.push(event.clone());
+        if h.len() > 200 {
+            let excess = h.len() - 200;
+            h.drain(..excess);
+        }
+        _ = self.events.send(event);
+    }
+
+    pub fn stage(&self, stage: &str) {
+        self.emit(UpdateEventData::Stage { stage: stage.into() });
+    }
+
+    pub fn log(&self, level: &str, message: impl Into<String>) {
+        self.emit(UpdateEventData::Log {
+            ts: chrono::Local::now().format("%H:%M:%S").to_string(),
+            level: level.into(),
+            message: message.into(),
+        });
+    }
+
+    pub fn progress(&self, downloaded: u64, total: u64, speed: f64) {
+        self.emit(UpdateEventData::Progress {
+            downloaded,
+            total,
+            speed,
+        });
+    }
+
+    pub fn done(&self, success: bool, error: Option<String>) {
+        self.emit(UpdateEventData::Done { success, error });
+    }
+
+    pub fn cancelled(&self) -> bool {
+        *self.ctl_rx.borrow() == UpdateCtl::Cancel
+    }
+
+    /// Атомарно начинает сессию обновления; false, если обновление уже выполняется.
+    pub fn try_begin(&self) -> bool {
+        if self
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return false;
+        }
+        self.history.write().unwrap().clear();
+        _ = self.control.send(UpdateCtl::Run);
+        true
+    }
+
+    pub fn finish(&self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+
+    pub fn cancel(&self) {
+        _ = self.control.send(UpdateCtl::Cancel);
+    }
+
+    pub fn switch_to_proxy(&self) {
+        _ = self.control.send(UpdateCtl::Proxy);
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -140,12 +285,29 @@ pub struct GuiSettings {
     pub auto_apply: bool,
 }
 
+pub const DEFAULT_CHECK_INTERVAL_HOURS: u32 = 2;
+pub const MAX_CHECK_INTERVAL_HOURS: u32 = 24;
+
+fn deserialize_check_interval<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum LegacyOrHours {
+        Legacy(bool),
+        Hours(u32),
+    }
+    Ok(match LegacyOrHours::deserialize(deserializer)? {
+        LegacyOrHours::Legacy(enabled) => u32::from(enabled) * DEFAULT_CHECK_INTERVAL_HOURS,
+        LegacyOrHours::Hours(hours) => hours,
+    })
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdaterSettings {
-    pub auto_check_ui: bool,
-    pub auto_check_core: bool,
+    #[serde(deserialize_with = "deserialize_check_interval")]
+    pub auto_check_ui: u32,
+    #[serde(deserialize_with = "deserialize_check_interval")]
+    pub auto_check_core: u32,
     pub backup_core: bool,
     pub github_proxy: Vec<String>,
     pub xray_repo: String,
@@ -159,8 +321,8 @@ impl Default for UpdaterSettings {
             xray_repo: "https://github.com/XTLS/Xray-core".into(),
             mihomo_repo: "https://github.com/MetaCubeX/mihomo".into(),
             backup_core: true,
-            auto_check_ui: true,
-            auto_check_core: true,
+            auto_check_ui: DEFAULT_CHECK_INTERVAL_HOURS,
+            auto_check_core: DEFAULT_CHECK_INTERVAL_HOURS,
         }
     }
 }
@@ -351,4 +513,9 @@ pub struct UpdateReq {
     pub backup_core: bool,
     #[serde(default)]
     pub assets: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateControlReq {
+    pub action: String,
 }
