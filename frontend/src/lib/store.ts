@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { apiCall, clashFetch } from './api'
-import { getStoredTheme } from './theme'
+import { getStoredEmojiFont, getStoredTheme } from './theme'
 import {
   DEFAULT_MIHOMO_REPO,
   DEFAULT_PING_TEST_TIMEOUT,
@@ -27,8 +27,8 @@ const initialSettings: AppSettings = {
   guiRouting: false,
   guiOutbounds: false,
   guiLog: false,
-  autoCheckUI: true,
-  autoCheckCore: true,
+  autoCheckUI: 2,
+  autoCheckCore: 2,
   backupCore: true,
   githubProxies: [],
   xrayRepo: DEFAULT_XRAY_REPO,
@@ -46,6 +46,7 @@ const initialSettings: AppSettings = {
   authEnabled: false,
   multiRouter: false,
   hiddenConfigFiles: [],
+  emojiFont: getStoredEmojiFont(),
 }
 
 const initialState: AppState = {

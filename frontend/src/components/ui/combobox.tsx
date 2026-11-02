@@ -5,6 +5,7 @@ import { IconCheck, IconSelector, IconX } from '@tabler/icons-react'
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
+import { ClearIcon } from '@/components/ui/clear-icon'
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
 import { cn } from '@/lib/utils'
 
@@ -73,7 +74,7 @@ function ComboboxClear({ className, ...props }: ComboboxPrimitive.Clear.Props) {
       className={cn(className)}
       {...props}
     >
-      <IconX className="pointer-events-none" />
+      <ClearIcon className="pointer-events-none" />
     </ComboboxPrimitive.Clear>
   )
 }
@@ -101,7 +102,13 @@ function ComboboxInput({
   return (
     <div ref={setAnchorElement} className={cn('min-w-0', fullWidth ? 'w-full' : 'inline-block w-auto')}>
       <InputGroup
-        className={cn(fullWidth ? 'w-full' : 'w-auto', open && 'hover:bg-input-background!', className)}
+        className={cn(
+          fullWidth ? 'w-full' : 'w-auto',
+          open
+            ? 'hover:bg-input-background!'
+            : 'hover:bg-input-background-hover! dark:hover:bg-input-background-hover!',
+          className
+        )}
         style={
           open
             ? {

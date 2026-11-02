@@ -6,9 +6,10 @@ mod controller;
 mod dns;
 mod frontend_embedder;
 mod geo;
-mod logger;
 mod healthchecker;
+mod logger;
 mod provider_inspector;
+mod resolver;
 mod route_test;
 mod settings;
 mod system;
@@ -149,14 +150,15 @@ fn setup_process_logging() {
     install_crash_signal_handlers();
 
     if !stdio_is_interactive()
-        && let Err(e) = redirect_stderr_to_process_log() {
-            eprintln!(
-                "{} {}: {}",
-                " Не удалось перенаправить stderr в".red().bold(),
-                XKEEN_UI_LOG,
-                e
-            );
-        }
+        && let Err(e) = redirect_stderr_to_process_log()
+    {
+        eprintln!(
+            "{} {}: {}",
+            " Не удалось перенаправить stderr в".red().bold(),
+            XKEEN_UI_LOG,
+            e
+        );
+    }
 }
 
 fn stdio_is_interactive() -> bool {
@@ -473,9 +475,17 @@ async fn main() {
             .user_agent("XKeen-UI")
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(120))
+            .dns_resolver(Arc::new(resolver::Ipv4Resolver))
+            .build()
+            .unwrap(),
+        update_client: reqwest::Client::builder()
+            .user_agent("XKeen-UI")
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .dns_resolver(Arc::new(resolver::Ipv4Resolver))
             .build()
             .unwrap(),
         update_checker: UpdateChecker::default(),
+        update_session: UpdateSession::new(),
         geo_cache,
         log_tx: log_tx_arc,
         log_watcher: Arc::new(tokio::sync::Mutex::new(None)),
@@ -483,7 +493,6 @@ async fn main() {
         debug: cli.debug,
         rci_token,
     };
-    version::start_update_checker(state.clone());
     watchdog::start_checker();
 
     if let Some(ref _token) = state.rci_token {
@@ -532,6 +541,7 @@ async fn main() {
             get(settings::get_settings).patch(settings::patch_settings),
         )
         .route("/api/version", get(version::version_handler))
+        .route("/api/version/check", get(version::check_updates_handler))
         .route("/api/system", get(system::get_system_stats))
         .route(
             "/api/rule-providers",
@@ -555,6 +565,7 @@ async fn main() {
         .route("/api/watchdog/update", get(watchdog::get_status).post(watchdog::install))
         .route("/api/watchdog/push-key", post(watchdog::push_key))
         .route("/api/watchdog/subscription", post(watchdog::subscribe).delete(watchdog::unsubscribe))
+        .route("/api/update/control", post(updater::post_update_control))
         .route("/api/geo", get(geo::get_geo))
         .route("/api/geo/site", get(geo::get_geosite))
         .route("/api/geo/ip", get(geo::get_geoip))
@@ -566,7 +577,8 @@ async fn main() {
         .route("/api/auth/reset", post(auth::post_auth_reset))
         .route("/clash/{*path}", any(api_relay::proxy_http))
         .route("/clash-ws/{*path}", get(api_relay::proxy_ws))
-        .route("/ws", get(websocket::ws_handler))
+        .route("/ws/log", get(websocket::log_ws_handler))
+        .route("/ws/updater", get(websocket::update_ws_handler))
         .route_layer(middleware::from_fn({
             let state = state.clone();
             move |req, next| {

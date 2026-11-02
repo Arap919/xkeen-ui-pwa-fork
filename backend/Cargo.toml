@@ -10,6 +10,7 @@ axum-server = { version = "0.7", default-features = false, features = ["tls-rust
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 colored = "3"
+dns-lookup = "4"
 flate2 = "1.1"
 futures-util = "0.3"
 http = "1.4.0"

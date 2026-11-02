@@ -33,13 +33,14 @@ import {
   useModalContext,
   useSettings,
 } from './lib/store'
-import { applyTheme, THEME_MEDIA_QUERY } from './lib/theme'
+import { applyEmojiFont, applyTheme, THEME_MEDIA_QUERY } from './lib/theme'
 import {
   DEFAULT_MIHOMO_REPO,
   DEFAULT_PING_TEST_TIMEOUT,
   DEFAULT_PING_TEST_URL,
   DEFAULT_XRAY_REPO,
   type Config,
+  type EmojiFont,
   type ThemeMode,
 } from './lib/types'
 import { parseClashApiCredentials } from './lib/utils'
@@ -56,6 +57,12 @@ function useThemeMode(theme: ThemeMode) {
     media.addEventListener('change', syncTheme)
     return () => media.removeEventListener('change', syncTheme)
   }, [theme])
+}
+
+function useEmojiFont(font: EmojiFont) {
+  useEffect(() => {
+    applyEmojiFont(font)
+  }, [font])
 }
 
 interface ModalManagerProps {
@@ -170,10 +177,10 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     [dispatch, showToast]
   )
 
-  const checkVersion = useCallback(
-    async (showUpdateToast = false) => {
+  const fetchVersion = useCallback(
+    async (path: string, showUpdateToast: boolean) => {
       try {
-        const data = await apiCall<any>('GET', 'version')
+        const data = await apiCall<any>('GET', path)
         if (!data.success) return
 
         const ui = data['xkeen-ui']
@@ -234,6 +241,14 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     [dispatch, showToast]
   )
 
+  const checkVersion = useCallback(
+    async (showUpdateToast = false) => {
+      await fetchVersion('version', showUpdateToast)
+      if (showUpdateToast) await fetchVersion('version/check', true)
+    },
+    [fetchVersion]
+  )
+
   useEffect(() => {
     const loadSettings = async () => {
       const data = await apiCall<any>('GET', 'settings')
@@ -245,8 +260,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
             guiRouting: data.gui.routing,
             guiOutbounds: data.gui.outbounds ?? false,
             guiLog: data.gui.log,
-            autoCheckUI: data.updater.auto_check_ui ?? true,
-            autoCheckCore: data.updater.auto_check_core ?? true,
+            autoCheckUI: data.updater.auto_check_ui ?? 2,
+            autoCheckCore: data.updater.auto_check_core ?? 2,
             backupCore: data.updater.backup_core,
             githubProxies: data.updater.github_proxy || [],
             xrayRepo: data.updater.xray_repo ?? DEFAULT_XRAY_REPO,
@@ -573,8 +588,10 @@ type AuthState = 'loading' | 'login' | 'setup' | 'authenticated'
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>('loading')
   const theme = useSettings((s) => s.theme)
+  const emojiFont = useSettings((s) => s.emojiFont)
 
   useThemeMode(theme)
+  useEmojiFont(emojiFont)
 
   useEffect(() => {
     fetch('/api/auth/login')

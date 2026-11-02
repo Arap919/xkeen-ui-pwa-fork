@@ -1,5 +1,5 @@
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ClearIcon } from '@/components/ui/clear-icon'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
@@ -16,7 +16,6 @@ import {
   IconGripVertical,
   IconPlugX,
   IconTrash,
-  IconX,
 } from '@tabler/icons-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiCall } from '../../../lib/api'
@@ -25,6 +24,7 @@ import type { Config } from '../../../lib/types'
 import { cn, copyText } from '../../../lib/utils'
 import { parse as parseJsonc } from 'jsonc-parser'
 import type { CodeMirrorRef } from '../CodeMirror'
+import { IndexBadge } from './IndexBadge'
 import { ProviderEditor, type ProviderEditorHandle } from '../editor/ProviderEditor'
 
 type Outbound = Record<string, any>
@@ -125,7 +125,7 @@ function extractMeta(ob: Outbound): OutboundMeta {
 function delayColor(delay: number | null): string {
   if (!delay) return 'text-red-400'
   if (delay < 300) return 'text-green-400'
-  if (delay < 600) return 'text-yellow-400'
+  if (delay < 600) return 'text-yellow-300'
   return 'text-red-400'
 }
 
@@ -449,7 +449,7 @@ export function GuiOutbounds({ editorRef, configs, activeConfigIndex }: Props) {
                   onClick={() => setLink('')}
                   className="text-muted-foreground hover:text-destructive hover:bg-transparent!"
                 >
-                  <IconX size={13} />
+                  <ClearIcon className="size-3.25" />
                 </Button>
               </InputGroupAddon>
             )}
@@ -626,9 +626,7 @@ const OutboundCard = memo(function OutboundCard({
         >
           <IconGripVertical size={16} />
         </div>
-        <Badge variant="outline" className="mr-1 size-7 rounded-full border-blue-500/20 bg-blue-500/10 text-blue-400">
-          #{index + 1}
-        </Badge>
+        <IndexBadge index={index} />
         <span className={cn('truncate text-sm', !tag && 'text-muted-foreground italic')}>{tag || 'без тега'}</span>
         {(meta.address || meta.port) && (
           <Tooltip>
