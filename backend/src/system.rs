@@ -8,6 +8,10 @@ fn memory_value(data: &serde_json::Value, key: &str) -> Option<u64> {
 }
 
 pub async fn get_system_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(state.system_cache.get_or_fetch(|| read_system_stats(&state)).await)
+}
+
+async fn read_system_stats(state: &AppState) -> serde_json::Value {
     let mut request = state
         .http_client
         .get("http://127.0.0.1:79/rci/show/system")
@@ -19,17 +23,17 @@ pub async fn get_system_stats(State(state): State<AppState>) -> Json<serde_json:
     let response = match request.send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            return Json(serde_json::json!({
+            return serde_json::json!({
                 "success": false,
                 "error": format!("RCI вернул {}", response.status()),
-            }));
+            });
         }
-        Err(error) => return Json(serde_json::json!({ "success": false, "error": error.to_string() })),
+        Err(error) => return serde_json::json!({ "success": false, "error": error.to_string() }),
     };
 
     let data = match response.json::<serde_json::Value>().await {
         Ok(data) => data,
-        Err(error) => return Json(serde_json::json!({ "success": false, "error": error.to_string() })),
+        Err(error) => return serde_json::json!({ "success": false, "error": error.to_string() }),
     };
     let memory_total = memory_value(&data, "memtotal");
     let memory_used = data
@@ -44,12 +48,12 @@ pub async fn get_system_stats(State(state): State<AppState>) -> Json<serde_json:
         memory_total,
         data.get("cpuload").and_then(|value| value.as_f64()),
     ) {
-        (Some(memory_used), Some(memory_total), Some(cpu_usage)) => Json(serde_json::json!({
+        (Some(memory_used), Some(memory_total), Some(cpu_usage)) => serde_json::json!({
             "success": true,
             "memoryUsed": memory_used,
             "memoryTotal": memory_total,
             "cpuUsage": cpu_usage,
-        })),
-        _ => Json(serde_json::json!({ "success": false, "error": "RCI вернул неполные системные метрики" })),
+        }),
+        _ => serde_json::json!({ "success": false, "error": "RCI вернул неполные системные метрики" }),
     }
 }

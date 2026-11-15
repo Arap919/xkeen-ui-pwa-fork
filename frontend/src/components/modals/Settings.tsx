@@ -1,3 +1,4 @@
+import { WatchdogSettings } from './WatchdogSettings'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ClearIcon } from '@/components/ui/clear-icon'
@@ -893,6 +894,7 @@ export function SettingsModal() {
               <TabsTrigger value="general">Общие</TabsTrigger>
               <TabsTrigger value="gui">Режим GUI</TabsTrigger>
               <TabsTrigger value="clash-api">Mihomo</TabsTrigger>
+              <TabsTrigger value="watchdog">Watchdog</TabsTrigger>
               <TabsTrigger value="updates">Обновления</TabsTrigger>
               <TabsTrigger value="plugins">Плагины</TabsTrigger>
             </TabsList>
@@ -1161,6 +1163,10 @@ export function SettingsModal() {
                     </Select>
                   </Field>
                 </FieldGroup>
+              </TabsContent>
+
+              <TabsContent value="watchdog">
+                {modals.showSettingsModal && <WatchdogSettings />}
               </TabsContent>
 
               <TabsContent value="updates">

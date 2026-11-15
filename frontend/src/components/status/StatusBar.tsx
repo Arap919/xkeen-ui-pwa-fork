@@ -1,3 +1,4 @@
+import { startVisiblePolling } from '../../lib/visibleActivity'
 import { Button } from '@/components/ui/button'
 import { ShineBorder } from '@/components/ui/shine-border'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -69,7 +70,7 @@ export function StatusBar({
 }: {
   onOpenCoreManage: () => void
   onOpenSettings: () => void
-  onRefreshStatus: () => void
+  onRefreshStatus: () => void | Promise<void>
   onOpenUpdate: (core: string) => void
   onLogout: () => void
 }) {
@@ -96,29 +97,21 @@ export function StatusBar({
     }
   }, [serviceStatus, currentCore])
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (state.serviceStatus !== 'pending') onRefreshStatus()
-    }, 3000)
-    return () => clearInterval(interval)
-  }, [state.serviceStatus, onRefreshStatus])
+  const refreshControlRef = useRef({ serviceStatus, onRefreshStatus })
+  useEffect(() => { refreshControlRef.current = { serviceStatus, onRefreshStatus } }, [serviceStatus, onRefreshStatus])
+
+  useEffect(() => startVisiblePolling(async () => {
+    const current = refreshControlRef.current
+    if (current.serviceStatus !== 'pending') await current.onRefreshStatus()
+  }, 3000), [])
 
   useEffect(() => {
     let mounted = true
-    const refreshSystemStats = async () => {
-      try {
-        const result = await apiCall<{ success: boolean } & SystemStats>('GET', 'system')
-        if (mounted && result.success) setSystemStats(result)
-      } catch {
-        // The status panel remains usable if system statistics are unavailable.
-      }
-    }
-    refreshSystemStats()
-    const interval = setInterval(refreshSystemStats, 3000)
-    return () => {
-      mounted = false
-      clearInterval(interval)
-    }
+    const stop = startVisiblePolling(async () => {
+      const result = await apiCall<{ success: boolean } & SystemStats>('GET', 'system')
+      if (mounted && result.success) setSystemStats(result)
+    }, 3000)
+    return () => { mounted = false; stop() }
   }, [])
 
   function setPending(text: string) {

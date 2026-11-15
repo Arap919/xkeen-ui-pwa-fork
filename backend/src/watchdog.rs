@@ -2,11 +2,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{sync::LazyLock, time::Duration};
-use tokio::{process::Command, sync::Mutex};
+use tokio::sync::Mutex;
 
-const CLI: &str = "/opt/bin/router-watchdog";
-static INSTALL: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
+#[cfg(test)]
 #[derive(Clone, Deserialize, Serialize)]
 struct UpdateStatus {
     installed_version: Option<String>,
@@ -18,6 +16,7 @@ struct UpdateStatus {
     release_notes: Option<String>,
 }
 
+#[cfg(test)]
 fn valid_version(version: &str) -> bool {
     let Some((base, revision)) = version.rsplit_once('-') else {
         return false;
@@ -27,6 +26,7 @@ fn valid_version(version: &str) -> bool {
         && semver::Version::parse(base).is_ok_and(|v| v.pre.is_empty() && v.build.is_empty())
 }
 
+#[cfg(test)]
 fn parse_check(bytes: &[u8]) -> Result<UpdateStatus, String> {
     let status: UpdateStatus = serde_json::from_slice(bytes)
         .map_err(|_| "router-watchdog не поддерживает проверку обновлений. Обновите пакет вручную.".to_string())?;
@@ -42,78 +42,8 @@ fn parse_check(bytes: &[u8]) -> Result<UpdateStatus, String> {
     Ok(status)
 }
 
-async fn check() -> Result<UpdateStatus, String> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(60),
-        Command::new(CLI).arg("--check-update").kill_on_drop(true).output(),
-    )
-    .await
-    .map_err(|_| "Проверка обновлений превысила время ожидания".to_string())?
-    .map_err(|_| "router-watchdog не установлен или недоступен".to_string())?;
-    if !output.status.success() {
-        return Err(
-            "Проверка обновлений недоступна. Проверьте версию router-watchdog и доступ к серверу релизов.".into(),
-        );
-    }
-    parse_check(&output.stdout)
-}
-
 fn failure(error: String) -> Json<Value> {
     Json(json!({"success": false, "error": error}))
-}
-
-pub async fn get_status() -> Json<Value> {
-    match check().await {
-        Ok(status) => Json(
-            json!({"success": true, "data": status, "installing": INSTALL.try_lock().is_err(), "push_available": true}),
-        ),
-        Err(error) => failure(error),
-    }
-}
-
-#[derive(Deserialize)]
-pub struct InstallRequest {
-    expected_version: String,
-}
-
-pub async fn install(Json(request): Json<InstallRequest>) -> Json<Value> {
-    if !valid_version(&request.expected_version) {
-        return failure("Некорректная версия".into());
-    }
-    // The task owns the lock and process even if the HTTP request is cancelled.
-    let task = tokio::spawn(async move {
-        let _guard = INSTALL
-            .try_lock()
-            .map_err(|_| "Обновление уже выполняется".to_string())?;
-        let status = check().await?;
-        if status.installed_version.is_none()
-            || !status.update_available
-            || status.latest_version != request.expected_version
-        {
-            return Err("Версия изменилась или обновление недоступно. Повторите проверку.".into());
-        }
-        let output = Command::new(CLI)
-            .args(["--install-update", "--expected-version", &request.expected_version])
-            .output()
-            .await
-            .map_err(|_| "Не удалось запустить обновление".to_string())?;
-        if !output.status.success() {
-            return Err("Установка не завершена. Проверьте состояние пакета перед повторной попыткой.".into());
-        }
-        let result: Value = serde_json::from_slice(&output.stdout)
-            .map_err(|_| "Неизвестный результат установки. Проверьте установленную версию.".to_string())?;
-        if result.get("installed_version").and_then(Value::as_str) != Some(request.expected_version.as_str())
-            || !result.get("updated").is_some_and(Value::is_boolean)
-        {
-            return Err("Неизвестный результат установки. Проверьте установленную версию.".into());
-        }
-        Ok(result)
-    });
-    match task.await {
-        Ok(Ok(result)) => Json(json!({"success": true, "data": result})),
-        Ok(Err(error)) => failure(error),
-        Err(_) => failure("Неизвестный результат установки. Повторите проверку версии.".into()),
-    }
 }
 
 fn valid_endpoint(endpoint: &str) -> bool {
@@ -156,6 +86,7 @@ struct SubscriptionRecord {
     subscription: SubscriptionInfo,
     last_notified: Option<String>,
 }
+#[cfg(test)]
 impl SubscriptionRecord {
     fn needs_version(&self, version: &str) -> bool {
         self.last_notified.as_deref() != Some(version)
@@ -285,6 +216,7 @@ mod push {
             Err(error) => failure(error),
         }
     }
+    #[cfg(test)]
     pub(super) fn build_request(
         subscription: &SubscriptionInfo, private_key: &[u8], payload: &[u8],
     ) -> Result<http::Request<Vec<u8>>, String> {
@@ -307,6 +239,7 @@ mod push {
             .build(payload)
             .map_err(|_| "Unable to encrypt push".into())
     }
+    #[cfg(test)]
     async fn notify_with_sender<F, Fut>(path: &str, status: &UpdateStatus, mut send: F) -> Result<(), String>
     where
         F: FnMut(http::Request<Vec<u8>>) -> Fut,
@@ -358,22 +291,6 @@ mod push {
         }
         Ok(())
     }
-    pub async fn notify(client: &reqwest::Client, status: &UpdateStatus) -> Result<(), String> {
-        notify_with_sender(PRIVATE_STATE, status, |request| async move {
-            let mut outgoing = client.post(request.uri().to_string());
-            for (name, value) in request.headers() {
-                outgoing = outgoing.header(name.as_str(), value.as_bytes());
-            }
-            outgoing
-                .body(request.into_body())
-                .send()
-                .await
-                .map(|response| response.status().as_u16())
-                .map_err(|_| "Push service unavailable".into())
-        })
-        .await
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -435,24 +352,6 @@ mod push {
 }
 
 pub use push::{key as push_key, subscribe, unsubscribe};
-pub fn start_checker() {
-    tokio::spawn(async {
-        let Ok(client) = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30))
-            .build()
-        else {
-            return;
-        };
-        loop {
-            if let Ok(status) = check().await {
-                let _ = push::notify(&client, &status).await;
-            }
-            tokio::time::sleep(Duration::from_secs(6 * 60 * 60)).await;
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
