@@ -267,8 +267,26 @@ fn fatal_signal_message(sig: i32) -> &'static [u8] {
     }
 }
 
+fn main() {
+    // Keenetic stores its POSIX timezone in /etc/TZ; chrono does not read that file.
+    // Set TZ before Tokio creates any threads, preserving an explicit process override.
+    if std::env::var_os("TZ").is_none_or(|value| value.is_empty()) {
+        for path in ["/etc/TZ", "/opt/etc/TZ"] {
+            if let Ok(value) = std::fs::read_to_string(path) {
+                let timezone = value.trim();
+                if !timezone.is_empty() && !timezone.contains(char::from(0)) {
+                    // SAFETY: no application threads have been started yet.
+                    unsafe { std::env::set_var("TZ", timezone); }
+                    break;
+                }
+            }
+        }
+    }
+    run();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().is_some_and(|arg| arg == "watchdog") {
         exit(watchdog_runtime::cli(argv.into_iter().skip(1).collect()).await);

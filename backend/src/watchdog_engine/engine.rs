@@ -33,7 +33,7 @@ type Reading = (String, u64, f64);
 
 fn log(path: &Path, code: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
-        let _ = writeln!(f, "{} {}", chrono::Utc::now().to_rfc3339(), code);
+        let _ = writeln!(f, "{} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), code);
     }
 }
 fn choose_winner(values: &[Reading]) -> Option<Reading> {
