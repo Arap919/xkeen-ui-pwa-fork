@@ -1,3 +1,4 @@
+import { startVisibleSocket } from './visibleActivity'
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
@@ -342,74 +343,23 @@ export function useConnectionsSync(
     if ((!clashApiPort && !clashApiUnix) || serviceStatus !== 'running') return
 
     const wsUrl = clashWsUrl(clashApiPort ?? '', 'connections', clashApiSecret, clashApiUnix)
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let isActive = true
-    let retryCount = 0
-
-    const cleanup = () => {
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (ws) {
-        ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
-        ws = null
-      }
-    }
-
-    const connect = () => {
-      if (!isActive || document.visibilityState !== 'visible') return
-      cleanup()
-      ws = new WebSocket(wsUrl)
-
-      ws.onopen = () => {
-        dispatch({ type: 'SET_WS_CONNECTED', connected: true })
-        retryCount = 0
-      }
-      ws.onerror = () => ws?.close()
-      ws.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data)
-          if (Array.isArray(data.connections)) dispatch({ type: 'SET_CONNECTIONS', connections: data.connections })
-        } catch {
-          /* ignore */
-        }
-      }
-
-      ws.onclose = () => {
-        dispatch({ type: 'SET_WS_CONNECTED', connected: false })
-        if (isActive && document.visibilityState === 'visible' && retryCount < 12) {
-          retryCount++
-          reconnectTimer = setTimeout(connect, Math.min(800 * Math.pow(1.4, retryCount), 12000))
-        }
-      }
-    }
-
     const isIOSSafari =
       /iP(ad|od|hone)/i.test(navigator.userAgent) && /Safari/i.test(navigator.userAgent) && !/CriOS|FxiOS/i.test(navigator.userAgent)
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && (!ws || ws.readyState !== WebSocket.OPEN)) {
-        retryCount = 0
-        connect()
-      }
-    }
-
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    setTimeout(connect, 200)
-
-    let touchHandler: (() => void) | null = null
-    if (isIOSSafari) {
-      touchHandler = () => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) connect()
-      }
-      document.addEventListener('touchstart', touchHandler, { once: true })
-    }
-
+    const stop = startVisibleSocket(
+      () => new WebSocket(wsUrl),
+      (connected) => dispatch({ type: 'SET_WS_CONNECTED', connected }),
+      (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (Array.isArray(data.connections)) dispatch({ type: 'SET_CONNECTIONS', connections: data.connections })
+        } catch { /* Ignore malformed snapshots. */ }
+      },
+      document,
+      isIOSSafari,
+    )
     return () => {
-      isActive = false
-      cleanup()
+      stop()
       dispatch({ type: 'SET_CONNECTIONS', connections: [], wsConnected: false })
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-      if (touchHandler) document.removeEventListener('touchstart', touchHandler)
     }
   }, [clashApiPort, clashApiSecret, clashApiUnix, dispatch, serviceStatus])
 }

@@ -12,12 +12,16 @@ mod provider_inspector;
 mod resolver;
 mod route_test;
 mod settings;
+mod status_cache;
 mod system;
 mod types;
 mod updater;
 mod version;
-mod websocket;
 mod watchdog;
+mod watchdog_engine;
+#[path = "watchdog_engine/runtime.rs"]
+mod watchdog_runtime;
+mod websocket;
 use crate::logger::{log, ts};
 use crate::types::*;
 use axum::http::StatusCode;
@@ -228,14 +232,7 @@ fn install_crash_signal_handlers() {
         SigSet::empty(),
     );
 
-    for signal in [
-        Signal::SIGABRT,
-        Signal::SIGBUS,
-        Signal::SIGFPE,
-        Signal::SIGILL,
-        Signal::SIGSEGV,
-        Signal::SIGTERM,
-    ] {
+    for signal in [Signal::SIGABRT, Signal::SIGBUS, Signal::SIGFPE, Signal::SIGILL, Signal::SIGSEGV] {
         unsafe {
             let _ = sigaction(signal, &action);
         }
@@ -270,8 +267,30 @@ fn fatal_signal_message(sig: i32) -> &'static [u8] {
     }
 }
 
+fn main() {
+    // Keenetic stores its POSIX timezone in /etc/TZ; chrono does not read that file.
+    // Set TZ before Tokio creates any threads, preserving an explicit process override.
+    if std::env::var_os("TZ").is_none_or(|value| value.is_empty()) {
+        for path in ["/etc/TZ", "/opt/etc/TZ"] {
+            if let Ok(value) = std::fs::read_to_string(path) {
+                let timezone = value.trim();
+                if !timezone.is_empty() && !timezone.contains(char::from(0)) {
+                    // SAFETY: no application threads have been started yet.
+                    unsafe { std::env::set_var("TZ", timezone); }
+                    break;
+                }
+            }
+        }
+    }
+    run();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|arg| arg == "watchdog") {
+        exit(watchdog_runtime::cli(argv.into_iter().skip(1).collect()).await);
+    }
     if std::env::args().any(|arg| arg == "-v" || arg == "-V" || arg == "--version") {
         let xkeen_config_path = XKEEN_CONF;
         let rci_token = std::fs::read_to_string(xkeen_config_path)
@@ -490,10 +509,12 @@ async fn main() {
         log_tx: log_tx_arc,
         log_watcher: Arc::new(tokio::sync::Mutex::new(None)),
         app_config_lock: Arc::new(tokio::sync::Mutex::new(())),
+        control_cache: Arc::new(status_cache::StatusCache::default()),
+        system_cache: Arc::new(status_cache::StatusCache::default()),
         debug: cli.debug,
         rci_token,
     };
-    watchdog::start_checker();
+    watchdog_runtime::RUNTIME.start();
 
     if let Some(ref _token) = state.rci_token {
         log("INFO", "RCI токен успешно загружен".into());
@@ -562,9 +583,15 @@ async fn main() {
         .route("/api/healthcheck/all", post(healthchecker::post_healthcheck_all))
         .route("/api/device-list", get(api_relay::get_device_list))
         .route("/api/update", post(updater::post_update))
-        .route("/api/watchdog/update", get(watchdog::get_status).post(watchdog::install))
+        .route(
+            "/api/watchdog/config",
+            get(watchdog_runtime::get_config).patch(watchdog_runtime::patch_config),
+        )
         .route("/api/watchdog/push-key", post(watchdog::push_key))
-        .route("/api/watchdog/subscription", post(watchdog::subscribe).delete(watchdog::unsubscribe))
+        .route(
+            "/api/watchdog/subscription",
+            post(watchdog::subscribe).delete(watchdog::unsubscribe),
+        )
         .route("/api/update/control", post(updater::post_update_control))
         .route("/api/geo", get(geo::get_geo))
         .route("/api/geo/site", get(geo::get_geosite))
@@ -600,12 +627,33 @@ async fn main() {
     let addr: SocketAddr = format!("0.0.0.0:{}", cli.port)
         .parse()
         .unwrap_or_else(|e| report_process_error(&format!("Error listening on 0.0.0.0:{}: {}", cli.port, e)));
+    let shutdown = async {
+        let _ = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler")
+            .recv()
+            .await;
+        crate::watchdog_runtime::RUNTIME.shutdown().await;
+    };
+    let shutdown_https = async {
+        let _ = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler")
+            .recv()
+            .await;
+        crate::watchdog_runtime::RUNTIME.shutdown().await;
+    };
     if let Some((cert, key)) = tls_files {
         let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
             .await
             .unwrap_or_else(|e| report_process_error(&format!("Failed to load TLS certificate or key: {}", e)));
         println!("{} [INFO] Listening on https://{}", ts(), addr);
+        let handle = axum_server::Handle::new();
+        let shutdown_handle = handle.clone();
+        tokio::spawn(async move {
+            shutdown_https.await;
+            shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+        });
         axum_server::bind_rustls(addr, tls_config)
+            .handle(handle)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .unwrap_or_else(|e| report_process_error(&format!("HTTPS server error: {}", e)));
@@ -615,6 +663,7 @@ async fn main() {
             .unwrap_or_else(|e| report_process_error(&format!("Error listening on {}: {}", addr, e)));
         println!("{} [INFO] Listening on http://{}", ts(), addr);
         axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(shutdown)
             .await
             .unwrap_or_else(|e| report_process_error(&format!("HTTP server error: {}", e)));
     }

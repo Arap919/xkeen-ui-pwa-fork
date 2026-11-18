@@ -99,6 +99,8 @@ pub fn access_log_path() -> String {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub control_cache: Arc<crate::status_cache::StatusCache>,
+    pub system_cache: Arc<crate::status_cache::StatusCache>,
     pub core: Arc<RwLock<CoreInfo>>,
     pub settings: Arc<RwLock<AppSettings>>,
     pub init_file: Arc<RwLock<Option<String>>>,

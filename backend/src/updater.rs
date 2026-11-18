@@ -587,7 +587,7 @@ async fn run_update_inner(state: &AppState, req: &UpdateReq) -> Result<(), Updat
             session.stage("restart");
             session.log("info", format!("Перезапуск {}...", core_cap));
             let log_len = fs::metadata(error_log_path()).await.map(|m| m.len()).unwrap_or(0) as usize;
-            if let Err(e) = crate::controller::soft_restart(&req.core).await {
+            if let Err(e) = crate::controller::soft_restart(state, &req.core).await {
                 return Err(UpdateError::Failed(e.to_string()));
             }
             if req.core == "mihomo"
@@ -1017,4 +1017,3 @@ mod tests {
         );
     }
 }
-
